@@ -1,6 +1,6 @@
 # antigravity-zh
 
-macOS 版 **Antigravity - Insiders** 的中文汉化工具，支持中英文随时热切换，应用更新后自动保持汉化。
+**Antigravity - Insiders** 的中文汉化工具（**仅支持 macOS**），支持中英文随时热切换，应用更新后自动保持汉化。
 
 ## 它能做什么
 
@@ -11,12 +11,18 @@ macOS 版 **Antigravity - Insiders** 的中文汉化工具，支持中英文随�
 
 ## 适用范围
 
-目前这个项目**仅支持 macOS 版 Antigravity - Insiders**。
+目前这个项目**仅支持 macOS 版的 Antigravity - Insiders**。
 
-如果你用的是普通版 Antigravity，可以打开你的 Antigravity 或其他 Agent，直接对它说：
+- **普通版 Antigravity 用户**：打开你的 Antigravity 或其他 Agent，对它说：
 
 ```text
-这个项目是针对 antigravity insiders 的，但是我的是普通版 antigravity，你帮我修改一下并安装。
+这个项目是针对 antigravity insiders 的，但是我的是普通版 antigravity，你帮我修改一下并安装：https://github.com/luanyufei/antigravity-zh
+```
+
+- **Windows / Linux 用户**：打开 Antigravity 或其他 Agent，对它说：
+
+```text
+这个项目目前只支持 macOS：https://github.com/luanyufei/antigravity-zh ，我现在用的是 Windows（或 Linux），请你参考它的汉化引擎和词典，帮我适配并安装到当前系统。
 ```
 
 ## 安装
@@ -33,6 +39,14 @@ cd antigravity-zh
 
 ```text
 帮我装好这个项目：https://github.com/luanyufei/antigravity-zh
+```
+
+## 同步最新汉化
+
+如果仓库更新了词典补全或修复，想同步最新改动到本地，可以直接打开 Antigravity 或其他 Agent，对它说：
+
+```text
+请你检查 https://github.com/luanyufei/antigravity-zh 的最新变动，帮我把最新的汉化词典和脚本同步更新到本地。
 ```
 
 ## 中英文随时切换
