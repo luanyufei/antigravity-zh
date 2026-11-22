@@ -250,7 +250,7 @@ function ensureTrayLanguageItem(menu) {
   }));
 }
 
-// Hook Electron Menu, Tray, Dock, and Dialog APIs cleanly
+// Hook Electron Menu, Popup Context Menu, Tray, Dock, and Dialog APIs cleanly
 const origSetApplicationMenu = electron.Menu.setApplicationMenu.bind(electron.Menu);
 electron.Menu.setApplicationMenu = function patchedSetApplicationMenu(menu) {
   if (isSyncingMenus || !menu) {
@@ -267,6 +267,22 @@ electron.Menu.setApplicationMenu = function patchedSetApplicationMenu(menu) {
     isSyncingMenus = false;
   }
 };
+
+if (electron.Menu && electron.Menu.prototype && typeof electron.Menu.prototype.popup === 'function') {
+  const origMenuPopup = electron.Menu.prototype.popup;
+  electron.Menu.prototype.popup = function patchedMenuPopup(...args) {
+    if (!isSyncingMenus) {
+      isSyncingMenus = true;
+      try {
+        captureAndTranslateMenu(this);
+      } catch (_e) {
+      } finally {
+        isSyncingMenus = false;
+      }
+    }
+    return origMenuPopup.apply(this, args);
+  };
+}
 
 if (electron.Tray && electron.Tray.prototype && electron.Tray.prototype.setContextMenu) {
   const origSetContextMenu = electron.Tray.prototype.setContextMenu;
