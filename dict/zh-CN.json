@@ -1688,7 +1688,15 @@
     "Open in Cursor": "在 Cursor 中打开",
     "Create with Prompt": "通过提示词创建",
     "New": "新建",
-    "No automations yet": "暂无自动化任务"
+    "No automations yet": "暂无自动化任务",
+    "Untitled": "未命名",
+    "Required": "必填",
+    "Optional": "可选",
+    "Uses your local files and tools. Schedules only.": "使用您的本地文件与工具，仅支持定时计划。",
+    "Uses your local files and tools.": "使用您的本地文件与工具。",
+    "Scheduled": "定时执行",
+    "at": "于",
+    "GMT+8": "东八区 (GMT+8)"
   },
   "patterns": [
     {
