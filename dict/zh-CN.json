@@ -1664,7 +1664,13 @@
     "Show Code Preview": "显示代码预览",
     "Hide Code Preview": "隐藏代码预览",
     "Background": "背景色",
-    "Foreground": "前景色"
+    "Foreground": "前景色",
+    "Change...": "更改...",
+    "Change…": "更改...",
+    "Browse...": "浏览...",
+    "Browse…": "浏览...",
+    "Select...": "选择...",
+    "Select…": "选择..."
   },
   "patterns": [
     {
