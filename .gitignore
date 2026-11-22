@@ -5,3 +5,4 @@ __pycache__/
 .patch.lock
 backups/
 config.json
+Agents.md

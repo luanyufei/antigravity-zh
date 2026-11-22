@@ -1679,7 +1679,13 @@
     "Delete Project": "删除项目",
     "Rename Project": "重命名项目",
     "Archive Project": "归档项目",
-    "Unarchive Project": "取消归档项目"
+    "Unarchive Project": "取消归档项目",
+    "Open Antigravity IDE": "打开 Antigravity IDE",
+    "Open in Antigravity IDE": "在 Antigravity IDE 中打开",
+    "Open VS Code": "打开 VS Code",
+    "Open in VS Code": "在 VS Code 中打开",
+    "Open Cursor": "打开 Cursor",
+    "Open in Cursor": "在 Cursor 中打开"
   },
   "patterns": [
     {
