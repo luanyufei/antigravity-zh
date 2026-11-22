@@ -1670,7 +1670,16 @@
     "Browse...": "浏览...",
     "Browse…": "浏览...",
     "Select...": "选择...",
-    "Select…": "选择..."
+    "Select…": "选择...",
+    "Copy Project Name": "复制项目名称",
+    "Copy Project Path": "复制项目路径",
+    "Reveal in Finder": "在访达中显示",
+    "Open in Finder": "在访达中打开",
+    "Open in Terminal": "在终端中打开",
+    "Delete Project": "删除项目",
+    "Rename Project": "重命名项目",
+    "Archive Project": "归档项目",
+    "Unarchive Project": "取消归档项目"
   },
   "patterns": [
     {
