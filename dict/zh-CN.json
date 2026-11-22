@@ -1659,7 +1659,10 @@
     "Show breakdown": "查看明细",
     "Hide breakdown": "收起明细",
     "Show breakdowns": "查看明细",
-    "Hide breakdowns": "收起明细"
+    "Hide breakdowns": "收起明细",
+    "Code Preview": "代码预览",
+    "Show Code Preview": "显示代码预览",
+    "Hide Code Preview": "隐藏代码预览"
   },
   "patterns": [
     {
