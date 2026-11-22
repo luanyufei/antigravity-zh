@@ -1685,7 +1685,10 @@
     "Open VS Code": "打开 VS Code",
     "Open in VS Code": "在 VS Code 中打开",
     "Open Cursor": "打开 Cursor",
-    "Open in Cursor": "在 Cursor 中打开"
+    "Open in Cursor": "在 Cursor 中打开",
+    "Create with Prompt": "通过提示词创建",
+    "New": "新建",
+    "No automations yet": "暂无自动化任务"
   },
   "patterns": [
     {
