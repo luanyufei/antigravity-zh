@@ -210,10 +210,60 @@
     }
   }
 
+  function processPureTextChildren(el) {
+    if (!el || el.nodeType !== 1 || isElementProtected(el)) return false;
+    const kids = el.childNodes;
+    if (!kids || kids.length < 2) return false;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].nodeType !== 3) return false;
+    }
+
+    if (state.locale === 'zh-CN') {
+      let alreadyTranslated = true;
+      const origParts = [];
+      for (let i = 0; i < kids.length; i++) {
+        const k = kids[i];
+        const rec = textRecords.get(k);
+        if (!rec || k.nodeValue !== rec.zh) {
+          alreadyTranslated = false;
+          origParts.push(k.nodeValue || '');
+        } else {
+          origParts.push(rec.orig);
+        }
+      }
+      if (alreadyTranslated) return true;
+
+      const joined = origParts.join('');
+      const zh = translateText(joined);
+      if (zh === joined) return false;
+
+      for (let i = 0; i < kids.length; i++) {
+        const k = kids[i];
+        const target = i === 0 ? zh : '';
+        textRecords.set(k, { orig: origParts[i], zh: target });
+        if (k.nodeValue !== target) k.nodeValue = target;
+      }
+      return true;
+    } else {
+      let restoredAny = false;
+      for (let i = 0; i < kids.length; i++) {
+        const k = kids[i];
+        const rec = textRecords.get(k);
+        if (rec && k.nodeValue === rec.zh) {
+          k.nodeValue = rec.orig;
+          restoredAny = true;
+        }
+      }
+      return restoredAny;
+    }
+  }
+
   function walkSubtree(root) {
     if (!root) return;
     if (root.nodeType === 3) {
-      processTextNode(root);
+      if (!processPureTextChildren(root.parentElement)) {
+        processTextNode(root);
+      }
       return;
     }
     if (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11) return;
@@ -221,6 +271,7 @@
     if (root.nodeType === 1) {
       if (root.matches && root.matches('[data-agy-i18n-ignore]')) return;
       processElementAttrs(root);
+      if (processPureTextChildren(root)) return;
     }
 
     const walker = document.createTreeWalker(
@@ -242,12 +293,17 @@
       }
     );
 
+    const handledParents = new Set();
     let curr;
     while ((curr = walker.nextNode())) {
       if (curr.nodeType === 3) {
+        if (handledParents.has(curr.parentElement)) continue;
         processTextNode(curr);
       } else if (curr.nodeType === 1) {
         processElementAttrs(curr);
+        if (processPureTextChildren(curr)) {
+          handledParents.add(curr);
+        }
       }
     }
   }
