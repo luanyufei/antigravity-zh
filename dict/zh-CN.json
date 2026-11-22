@@ -1655,9 +1655,41 @@
     "Delete all Remote Agents data": "删除所有远程 Agent 数据",
     "Delete All Data": "删除所有数据",
     "Delete All Remote Agents Data?": "确认删除所有远程 Agent 数据？",
-    "This permanently deletes all of your Remote Agents conversations, projects, scheduled tasks, connected plugins and settings, and stops any running remote agents. It can't be undone. Data in the desktop app and your Google account are not affected, and you can keep using Remote Agents afterwards.": "此操作将永久删除您所有的远程 Agent 对话、项目、定时任务、已连接插件和设置，并停止所有运行中的远程 Agent，且无法撤销。本地桌面应用与您的 Google 账号数据不受影响，之后仍可继续使用远程 Agent。"
+    "This permanently deletes all of your Remote Agents conversations, projects, scheduled tasks, connected plugins and settings, and stops any running remote agents. It can't be undone. Data in the desktop app and your Google account are not affected, and you can keep using Remote Agents afterwards.": "此操作将永久删除您所有的远程 Agent 对话、项目、定时任务、已连接插件和设置，并停止所有运行中的远程 Agent，且无法撤销。本地桌面应用与您的 Google 账号数据不受影响，之后仍可继续使用远程 Agent。",
+    "Show breakdown": "查看明细",
+    "Hide breakdown": "收起明细",
+    "Show breakdowns": "查看明细",
+    "Hide breakdowns": "收起明细"
   },
   "patterns": [
+    {
+      "regex": "^Hide (\\d+) breakdowns?$",
+      "replace": "收起 $1 项明细"
+    },
+    {
+      "regex": "^Show (\\d+) breakdowns?$",
+      "replace": "查看 $1 项明细"
+    },
+    {
+      "regex": "^(\\d+)s limit$",
+      "replace": "$1 秒限额"
+    },
+    {
+      "regex": "^(\\d+)m limit$",
+      "replace": "$1 分钟限额"
+    },
+    {
+      "regex": "^(\\d+)d limit$",
+      "replace": "$1 天限额"
+    },
+    {
+      "regex": "^(\\d+)h limit$",
+      "replace": "$1 小时限额"
+    },
+    {
+      "regex": "^Resets in (.+)$",
+      "replace": "将在 __DUR__$1__ENDDUR__ 后重置"
+    },
     {
       "regex": "^Receive product updates, tips, and promotions from (.+) via email\\.$",
       "replace": "通过电子邮件接收来自 $1 的产品更新、使用技巧和推广信息。"

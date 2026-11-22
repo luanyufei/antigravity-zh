@@ -87,6 +87,10 @@
       .replace(/\b(\d+)\s+seconds?\b/gi, '$1 秒')
       .replace(/\b(\d+)\s+mins?\b/gi, '$1 分钟')
       .replace(/\b(\d+)\s+hrs?\b/gi, '$1 小时')
+      .replace(/\b(\d+)d\b/g, '$1 天')
+      .replace(/\b(\d+)h\b/g, '$1 小时')
+      .replace(/\b(\d+)m\b/g, '$1 分钟')
+      .replace(/\b(\d+)s\b/g, '$1 秒')
       .replace(/,\s*/g, ' ');
   }
 
