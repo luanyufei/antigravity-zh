@@ -1695,7 +1695,12 @@
     "Uses your local files and tools. Schedules only.": "使用您的本地文件与工具，仅支持定时计划。",
     "Uses your local files and tools.": "使用您的本地文件与工具。",
     "Scheduled": "定时执行",
-    "at": "于"
+    "at": "于",
+    "Downloading Update": "正在下载更新",
+    "Checking for Updates": "正在检查更新",
+    "Download Update": "下载更新",
+    "Install Update": "安装更新",
+    "Update Ready": "更新已就绪"
   },
   "patterns": [
     {
