@@ -1726,7 +1726,10 @@
     "Attach Antigravity server logs": "附加 Antigravity 服务日志",
     "Visit": "访问",
     "Legal Help": "法律帮助",
-    "to ask for content changes for legal reasons.": "以基于法律原因请求更改内容。"
+    "to ask for content changes for legal reasons.": "以基于法律原因请求更改内容。",
+    "Local Checkout": "本地检出",
+    "Worktrees are available for Git repositories": "工作树仅适用于 Git 仓库",
+    "Worktrees are not available for this project": "此项目不支持工作树"
   },
   "patterns": [
     {
