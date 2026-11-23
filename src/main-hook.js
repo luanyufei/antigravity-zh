@@ -82,6 +82,8 @@ try {
 const menuItemState = new WeakMap(); // MenuItem -> { orig, lastApplied }
 const activeHubContents = new Set();
 const activeHubFrames = new Set();
+const menuEnhancers = [];
+const hubReadyListeners = [];
 let lastAppMenu = null;
 let lastDockMenu = null;
 let activeTray = null;
@@ -229,6 +231,16 @@ function ensureAppMenuLanguageItem(menu) {
   appSubmenu.insert(insertAt, buildLanguageSubmenu());
 }
 
+function runMenuEnhancers(menu) {
+  for (const fn of menuEnhancers) {
+    try {
+      fn(menu, config);
+    } catch (err) {
+      log('Menu enhancer error', err);
+    }
+  }
+}
+
 function ensureTrayLanguageItem(menu) {
   if (!menu || !Array.isArray(menu.items)) return;
   const isZh = config.locale === 'zh-CN';
@@ -261,6 +273,7 @@ electron.Menu.setApplicationMenu = function patchedSetApplicationMenu(menu) {
   try {
     captureAndTranslateMenu(menu);
     ensureAppMenuLanguageItem(menu);
+    runMenuEnhancers(menu);
     if (updaterModuleRef) registerUpdaterChineseAliases(updaterModuleRef);
     return origSetApplicationMenu(menu);
   } finally {
@@ -359,6 +372,7 @@ function syncAllNativeMenus() {
     if (appMenu) {
       captureAndTranslateMenu(appMenu);
       ensureAppMenuLanguageItem(appMenu);
+      runMenuEnhancers(appMenu);
       origSetApplicationMenu(appMenu);
     }
     if (activeTray && lastTrayMenu) {
@@ -471,6 +485,13 @@ function injectIntoHubWebContents(wc) {
   wc.executeJavaScript(code, true).catch((err) => {
     log(`executeJavaScript warning on ${url}`, err);
   });
+  for (const fn of hubReadyListeners) {
+    try {
+      fn(wc);
+    } catch (err) {
+      log('Hub ready listener error', err);
+    }
+  }
 }
 
 function injectIntoLocalSubframe(frame) {
@@ -646,6 +667,36 @@ const api = {
   setLocale,
   toggleLocale,
   syncAllNativeMenus,
+  registerMenuEnhancer: (fn) => {
+    if (typeof fn === 'function') menuEnhancers.push(fn);
+  },
+  onHubWebContentsReady: (fn) => {
+    if (typeof fn === 'function') hubReadyListeners.push(fn);
+  },
+  getActiveHubContents: () => Array.from(activeHubContents),
+  isHubUrl,
+  log,
+  I18N_DIR,
 };
 global.__AGY_INSIDERS_I18N_MAIN_LOADED__ = api;
+
+// Load optional user local plugins from ~/.config/antigravity-insiders-i18n/local-plugins/*.js
+const LOCAL_PLUGINS_DIR = path.join(I18N_DIR, 'local-plugins');
+try {
+  if (fs.existsSync(LOCAL_PLUGINS_DIR)) {
+    for (const file of fs.readdirSync(LOCAL_PLUGINS_DIR).sort()) {
+      if (!file.endsWith('.js')) continue;
+      try {
+        const plugin = require(path.join(LOCAL_PLUGINS_DIR, file));
+        if (typeof plugin === 'function') plugin(api);
+        log(`Loaded local plugin: ${file}`);
+      } catch (err) {
+        log(`Failed to load local plugin ${file}`, err);
+      }
+    }
+  }
+} catch (err) {
+  log('Failed to scan local-plugins directory', err);
+}
+
 module.exports = api;
