@@ -140,6 +140,17 @@
     return false;
   }
 
+  function translateTextInContext(raw, el) {
+    if (el && raw && raw.trim() === 'New') {
+      const insideMenuOrOption = el.closest && el.closest('[role="menu"], [role="listbox"], [role="option"], [role="menuitem"]');
+      const insideActionButton = el.closest && el.closest('button') && !insideMenuOrOption;
+      if (insideMenuOrOption || !insideActionButton) {
+        return raw.replace('New', '新');
+      }
+    }
+    return translateText(raw);
+  }
+
   function processTextNode(node) {
     const parent = node.parentElement;
     if (!parent || isElementProtected(parent)) return;
@@ -152,14 +163,14 @@
       if (rec) {
         if (current === rec.zh) return; // Already showing translated text
         // React updated the underlying text to a new string
-        const zh = translateText(current);
+        const zh = translateTextInContext(current, parent);
         rec.orig = current;
         rec.zh = zh;
         if (zh !== current) {
           node.nodeValue = zh;
         }
       } else {
-        const zh = translateText(current);
+        const zh = translateTextInContext(current, parent);
         if (zh !== current) {
           textRecords.set(node, { orig: current, zh });
           node.nodeValue = zh;
