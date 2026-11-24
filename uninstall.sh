@@ -8,8 +8,8 @@ if [ -f "$TARGET_DIR/patcher.py" ]; then
   echo "正在卸载后台更新守护..."
   /usr/bin/python3 "$TARGET_DIR/patcher.py" uninstall-agent || true
 
-  echo "正在从备份还原官方原版应用..."
-  /usr/bin/python3 "$TARGET_DIR/patcher.py" restore || echo "提示：未找到当前版本的本地备份，可重新下载官方安装包覆盖。"
+  echo "正在从备份还原所有已安装的官方原版 Antigravity 应用..."
+  /usr/bin/python3 "$TARGET_DIR/patcher.py" restore || echo "提示：部分版本未找到本地备份，可重新下载官方安装包覆盖。"
 fi
 
 rm -f "$BIN_PATH"

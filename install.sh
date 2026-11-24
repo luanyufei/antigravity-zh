@@ -4,17 +4,38 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_DIR="$HOME/.config/antigravity-insiders-i18n"
 BIN_DIR="$HOME/.local/bin"
-APP_PATH="${AGY_INSIDERS_APP:-/Applications/Antigravity - Insiders.app}"
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "错误：目前仅支持 macOS。" >&2
   exit 1
 fi
 
-if [ ! -d "$APP_PATH" ]; then
-  echo "错误：未找到 $APP_PATH，请确认已安装 Antigravity - Insiders。" >&2
+INSIDERS_APP="/Applications/Antigravity - Insiders.app"
+STABLE_APP="/Applications/Antigravity.app"
+FOUND_APPS=()
+
+if [ -n "${AGY_APP:-}" ]; then
+  if [ -d "$AGY_APP" ]; then
+    FOUND_APPS+=("$AGY_APP")
+  else
+    echo "错误：未找到指定路径 $AGY_APP" >&2
+    exit 1
+  fi
+else
+  [ -d "$INSIDERS_APP" ] && FOUND_APPS+=("$INSIDERS_APP")
+  [ -d "$STABLE_APP" ] && FOUND_APPS+=("$STABLE_APP")
+fi
+
+if [ "${#FOUND_APPS[@]}" -eq 0 ]; then
+  echo "错误：未在 /Applications 下检测到 Antigravity - Insiders.app 或 Antigravity.app。" >&2
+  echo "如果安装在其他路径，可使用 AGY_APP=\"/path/to/Antigravity.app\" ./install.sh" >&2
   exit 1
 fi
+
+echo "检测到以下已安装的应用："
+for app in "${FOUND_APPS[@]}"; do
+  echo "  - $app"
+done
 
 mkdir -p "$TARGET_DIR/dict" "$TARGET_DIR/local-plugins/vibrancy-assets" "$BIN_DIR"
 
@@ -26,29 +47,30 @@ cp "$REPO_DIR/src/local-plugins/vibrancy.js" "$TARGET_DIR/local-plugins/vibrancy
 cp "$REPO_DIR/src/local-plugins/vibrancy-assets/style.js" "$TARGET_DIR/local-plugins/vibrancy-assets/style.js"
 chmod +x "$TARGET_DIR/patcher.py"
 
-if [ ! -f "$TARGET_DIR/local-plugins/vibrancy.json" ]; then
-  cat > "$TARGET_DIR/local-plugins/vibrancy.json" <<'EOF'
+for variant in insiders stable; do
+  if [ ! -f "$TARGET_DIR/local-plugins/vibrancy-${variant}.json" ]; then
+    cat > "$TARGET_DIR/local-plugins/vibrancy-${variant}.json" <<'EOF'
 {
   "enabled": true,
   "material": "fullscreen-ui",
   "opacity": 0.55
 }
 EOF
-fi
+  fi
+done
 
 if [ ! -f "$TARGET_DIR/dict/custom.json" ]; then
   cp "$REPO_DIR/dict/custom.json" "$TARGET_DIR/dict/custom.json"
 fi
 
 if [ ! -f "$TARGET_DIR/config.json" ]; then
-  cat > "$TARGET_DIR/config.json" <<EOF
+  cat > "$TARGET_DIR/config.json" <<'EOF'
 {
   "locale": "zh-CN",
   "showFloatingToggle": true,
   "autoPatchOnUpdate": true,
   "shortcut": "CmdOrCtrl+Option+L",
-  "signingIdentity": "",
-  "appPath": "$APP_PATH"
+  "signingIdentity": ""
 }
 EOF
 fi
@@ -59,12 +81,16 @@ exec /usr/bin/python3 "$HOME/.config/antigravity-insiders-i18n/patcher.py" "$@"
 EOF
 chmod +x "$BIN_DIR/agy-i18n"
 
-echo "正在注入汉化引导并签名..."
-/usr/bin/python3 "$TARGET_DIR/patcher.py" patch --app "$APP_PATH"
+echo "正在为已检测到的应用注入引导并签名..."
+if [ -n "${AGY_APP:-}" ]; then
+  /usr/bin/python3 "$TARGET_DIR/patcher.py" patch --app "$AGY_APP"
+else
+  /usr/bin/python3 "$TARGET_DIR/patcher.py" patch
+fi
 
-echo "正在安装后台更新守护（仅文件变动时触发，平时零占用）..."
+echo "正在安装后台更新守护（同时监听两个版本，平时零占用）..."
 /usr/bin/python3 "$TARGET_DIR/patcher.py" install-agent
 
 echo ""
-echo "安装完成！请按 ⌘Q 完全退出并重新打开 Antigravity - Insiders 即可生效。"
+echo "安装完成！请按 ⌘Q 完全退出并重新打开对应的 Antigravity 应用即可生效。"
 echo "常用命令：$BIN_DIR/agy-i18n status"

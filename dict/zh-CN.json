@@ -2094,6 +2094,10 @@
     "Open workspaces": "打开多个工作区",
     "Select Download Folder": "选择下载文件夹",
     "OK": "好",
-    "Cancel": "取消"
+    "Cancel": "取消",
+    "About Antigravity": "关于 Antigravity",
+    "Hide Antigravity": "隐藏 Antigravity",
+    "Quit Antigravity": "退出 Antigravity",
+    "Open Antigravity": "打开 Antigravity"
   }
 }

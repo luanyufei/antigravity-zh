@@ -20,8 +20,20 @@ const RENDERER_SCRIPT_PATH = path.join(I18N_DIR, 'renderer-i18n.js');
 const PATCHER_PATH = path.join(I18N_DIR, 'patcher.py');
 const LOG_PATH = path.join(I18N_DIR, 'i18n.log');
 
+function detectRunningAppInfo() {
+  const execPath = process.execPath || '';
+  const m = /^(.*\.app)\/Contents\/MacOS\//.exec(execPath);
+  const bundlePath = m ? m[1] : '';
+  const appName = bundlePath ? path.basename(bundlePath, '.app') : (electron.app && electron.app.getName ? electron.app.getName() : 'Antigravity');
+  const variant = /insider/i.test(bundlePath || appName) ? 'insiders' : 'stable';
+  return { bundlePath, appName, variant };
+}
+
+const APP_INFO = detectRunningAppInfo();
+const APP_STATE_PATH = path.join(I18N_DIR, `state-${APP_INFO.variant}.json`);
+
 function log(msg, err) {
-  const line = `[${new Date().toISOString()}] [agy-i18n] ${msg}${err ? ' :: ' + (err.stack || err.message || String(err)) : ''}\n`;
+  const line = `[${new Date().toISOString()}] [agy-i18n][${APP_INFO.variant}] ${msg}${err ? ' :: ' + (err.stack || err.message || String(err)) : ''}\n`;
   try {
     fs.appendFileSync(LOG_PATH, line);
   } catch (_e) {}
@@ -36,24 +48,34 @@ function readJsonSafe(filePath, fallback) {
 }
 
 function loadConfig() {
-  const raw = readJsonSafe(CONFIG_PATH, {});
+  const rawGlobal = readJsonSafe(CONFIG_PATH, {});
+  const hasPerApp = fs.existsSync(APP_STATE_PATH);
+  const rawApp = hasPerApp ? readJsonSafe(APP_STATE_PATH, {}) : {};
+  const effectiveLocale = hasPerApp ? rawApp.locale : rawGlobal.locale;
+  const effectivePill = hasPerApp ? rawApp.showFloatingToggle : rawGlobal.showFloatingToggle;
   return {
-    locale: raw.locale === 'en' ? 'en' : 'zh-CN',
-    showFloatingToggle: raw.showFloatingToggle !== false,
-    autoPatchOnUpdate: raw.autoPatchOnUpdate !== false,
-    shortcut: raw.shortcut || 'CmdOrCtrl+Option+L',
-    signingIdentity: raw.signingIdentity || '',
-    appPath: raw.appPath || '/Applications/Antigravity - Insiders.app',
+    locale: effectiveLocale === 'en' ? 'en' : 'zh-CN',
+    showFloatingToggle: effectivePill !== false,
+    autoPatchOnUpdate: rawGlobal.autoPatchOnUpdate !== false,
+    shortcut: rawGlobal.shortcut || 'CmdOrCtrl+Option+L',
+    signingIdentity: rawGlobal.signingIdentity || '',
+    appPath: APP_INFO.bundlePath || rawGlobal.appPath || '/Applications/Antigravity - Insiders.app',
   };
 }
 
 function saveConfig(next) {
+  // Persist per-app UI preferences (locale, floating pill) exclusively to state-<variant>.json
+  // so Insiders and Stable are completely decoupled and never race on config.json.
   try {
-    const tmp = `${CONFIG_PATH}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, CONFIG_PATH);
+    const appState = {
+      locale: next.locale === 'en' ? 'en' : 'zh-CN',
+      showFloatingToggle: next.showFloatingToggle !== false,
+    };
+    const tmp = `${APP_STATE_PATH}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(appState, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, APP_STATE_PATH);
   } catch (err) {
-    log('Failed to save config.json', err);
+    log(`Failed to save ${path.basename(APP_STATE_PATH)}`, err);
   }
 }
 
@@ -558,9 +580,15 @@ function scheduleExternalReload() {
   }, 150);
 }
 
-for (const watchTarget of [CONFIG_PATH, DICT_PATH, CUSTOM_DICT_PATH]) {
+// Watch I18N_DIR for per-app state-<variant>.json & config.json changes, plus dict files
+for (const watchTarget of [I18N_DIR, DICT_PATH, CUSTOM_DICT_PATH]) {
   try {
-    fs.watch(watchTarget, { persistent: false }, () => scheduleExternalReload());
+    fs.watch(watchTarget, { persistent: false }, (_ev, filename) => {
+      if (watchTarget === I18N_DIR && filename && filename !== path.basename(APP_STATE_PATH) && filename !== 'config.json') {
+        return;
+      }
+      scheduleExternalReload();
+    });
   } catch (_e) {}
 }
 
@@ -568,9 +596,7 @@ for (const watchTarget of [CONFIG_PATH, DICT_PATH, CUSTOM_DICT_PATH]) {
 // Layer 1 Seamless Auto-Update Preservation: Hook MacUpdater & ./updater
 // ---------------------------------------------------------------------------
 function resolveRunningAppBundlePath() {
-  // process.execPath is /Applications/Antigravity - Insiders.app/Contents/MacOS/Antigravity - Insiders
-  const m = /^(.*\.app)\/Contents\/MacOS\//.exec(process.execPath);
-  return m ? m[1] : config.appPath;
+  return APP_INFO.bundlePath || config.appPath;
 }
 
 function patchUpdateZipAsync(inputZip, outputZip) {
@@ -660,7 +686,7 @@ Module._load = function patchedModuleLoad(request, parent, isMain) {
   return loaded;
 };
 
-log(`Antigravity - Insiders i18n main hook initialized (locale=${config.locale})`);
+log(`${APP_INFO.appName} i18n main hook initialized (variant=${APP_INFO.variant}, locale=${config.locale})`);
 
 const api = {
   getConfig: () => ({ ...config }),
@@ -677,6 +703,7 @@ const api = {
   isHubUrl,
   log,
   I18N_DIR,
+  appInfo: APP_INFO,
 };
 global.__AGY_INSIDERS_I18N_MAIN_LOADED__ = api;
 

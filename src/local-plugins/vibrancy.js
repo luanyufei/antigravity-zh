@@ -16,7 +16,10 @@ module.exports = function initVibrancyPlugin(api) {
 
   const PLUGIN_DIR = path.join(api.I18N_DIR, 'local-plugins');
   const ASSETS_DIR = path.join(PLUGIN_DIR, 'vibrancy-assets');
-  const CFG_PATH = path.join(PLUGIN_DIR, 'vibrancy.json');
+  const VARIANT = (api.appInfo && api.appInfo.variant) || (/insider/i.test(process.execPath || '') ? 'insiders' : 'stable');
+  const CFG_FILENAME = `vibrancy-${VARIANT}.json`;
+  const CFG_PATH = path.join(PLUGIN_DIR, CFG_FILENAME);
+  const LEGACY_CFG_PATH = path.join(PLUGIN_DIR, 'vibrancy.json');
   const STYLE_MODULE_PATH = path.join(ASSETS_DIR, 'style.js');
   const DEFAULT_CFG = { enabled: true, material: 'fullscreen-ui', opacity: 0.55 };
   const MATERIALS = [
@@ -33,7 +36,11 @@ module.exports = function initVibrancyPlugin(api) {
 
   function loadCfg() {
     try {
-      const raw = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
+      const srcPath = fs.existsSync(CFG_PATH)
+        ? CFG_PATH
+        : (VARIANT === 'insiders' && fs.existsSync(LEGACY_CFG_PATH) ? LEGACY_CFG_PATH : null);
+      if (!srcPath) return { ...DEFAULT_CFG };
+      const raw = JSON.parse(fs.readFileSync(srcPath, 'utf8'));
       return {
         enabled: raw.enabled !== false,
         material: typeof raw.material === 'string' ? raw.material : DEFAULT_CFG.material,
@@ -175,15 +182,23 @@ module.exports = function initVibrancyPlugin(api) {
     Module._load = patchedLoad;
   }
 
+  function isCurtainDataUrl(url) {
+    if (!url || typeof url !== 'string' || !url.startsWith('data:text/html')) return false;
+    return !url.includes('background:transparent') && (url.includes('background:') || url.includes('background%3A') || url.includes('height:100%'));
+  }
+
   function applyViewVibrancy(view) {
     if (!view || !view.webContents || view.webContents.isDestroyed?.()) {
       trackedViews.delete(view);
       return;
     }
     const url = view.webContents.getURL?.() || '';
-    if (url.startsWith('data:text/html') && url.includes('background:') && !url.includes('background:transparent')) {
+    // Stable Antigravity (three-layer stack OFF) uses an opaque data:text/html curtainView behind hubWcv.
+    // Hide it while vibrancy is enabled and restore visibility when vibrancy is turned off.
+    if (isCurtainDataUrl(url)) {
       try {
         if (typeof view.setVisible === 'function') view.setVisible(!cfg.enabled);
+        if (cfg.enabled && origWcvSetBg) origWcvSetBg.call(view, '#00000000');
       } catch (_e) {}
       return;
     }
@@ -270,6 +285,22 @@ module.exports = function initVibrancyPlugin(api) {
     applyWindowVibrancy(win);
   });
 
+  // Hide Stable's opaque curtainView immediately once its data:text/html document loads
+  electron.app.on('web-contents-created', (_ev, contents) => {
+    if (!contents) return;
+    const checkCurtain = () => {
+      try {
+        if (contents.isDestroyed?.()) return;
+        const u = contents.getURL?.() || '';
+        if (isCurtainDataUrl(u) && electron.BaseWindow && typeof electron.BaseWindow.getAllWindows === 'function') {
+          for (const w of electron.BaseWindow.getAllWindows()) applyWindowVibrancy(w);
+        }
+      } catch (_e) {}
+    };
+    contents.on('did-navigate', checkCurtain);
+    contents.on('dom-ready', checkCurtain);
+  });
+
   // Vibrancy submenu in the macOS App menu right below Language.
   api.registerMenuEnhancer((appMenu, i18nCfg) => {
     const appSubmenu = appMenu?.items?.[0]?.submenu;
@@ -341,7 +372,7 @@ module.exports = function initVibrancyPlugin(api) {
     }));
   });
 
-  // Watch vibrancy.json and vibrancy-assets/style.js so future CSS tweaks hot-reload live!
+  // Watch this app's own vibrancy-<variant>.json and shared vibrancy-assets/style.js
   let reloadTimer = null;
   function scheduleReload(label) {
     if (reloadTimer) clearTimeout(reloadTimer);
@@ -353,7 +384,7 @@ module.exports = function initVibrancyPlugin(api) {
   }
   try {
     fs.watch(PLUGIN_DIR, { persistent: false }, (_eventType, filename) => {
-      if (filename === 'vibrancy.json') scheduleReload('vibrancy.json');
+      if (filename === CFG_FILENAME) scheduleReload(CFG_FILENAME);
     });
   } catch (_e) {}
   try {
