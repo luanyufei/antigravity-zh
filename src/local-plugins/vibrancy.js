@@ -102,7 +102,7 @@ module.exports = function initVibrancyPlugin(api) {
         origBgMap.set(this, color);
       }
       const url = this.webContents && !this.webContents.isDestroyed?.() ? (this.webContents.getURL?.() || '') : '';
-      const isHubOrBooting = url === '' || api.isHubUrl(url);
+      const isHubOrBooting = url === '' || url === 'about:blank' || api.isHubUrl(url);
       if (cfg.enabled && isHubOrBooting) {
         return origWcvSetBg.call(this, '#00000000');
       }
@@ -252,11 +252,18 @@ module.exports = function initVibrancyPlugin(api) {
   }
 
   api.onHubWebContentsReady((wc) => {
-    if (electron.BaseWindow && typeof electron.BaseWindow.getAllWindows === 'function') {
-      for (const w of electron.BaseWindow.getAllWindows()) applyWindowVibrancy(w);
-    }
-    for (const v of Array.from(trackedViews)) applyViewVibrancy(v);
-    applyRendererVibrancy(wc);
+    const refresh = () => {
+      if (electron.BaseWindow && typeof electron.BaseWindow.getAllWindows === 'function') {
+        for (const w of electron.BaseWindow.getAllWindows()) applyWindowVibrancy(w);
+      }
+      for (const v of Array.from(trackedViews)) applyViewVibrancy(v);
+      applyRendererVibrancy(wc);
+    };
+    refresh();
+    // Re-apply once after initial boot/update overlay settles so NSVisualEffectView never stalls
+    setTimeout(() => {
+      if (!wc.isDestroyed?.()) refresh();
+    }, 800);
   });
 
   electron.app.on('browser-window-created', (_ev, win) => {
