@@ -2,7 +2,7 @@
 
 适用于 macOS 版 **Antigravity** 与 **Antigravity - Insiders** 的中文汉化、毛玻璃外观与状态监控工具。所有设置实时生效，应用更新后自动保留，也可随时还原原版。
 
-<img src="assets/preview.jpg" alt="antigravity-zh 界面预览" width="100%" />
+<img src="assets/preview.png" alt="antigravity-zh 界面预览" width="100%" />
 
 ## 主要功能
 
