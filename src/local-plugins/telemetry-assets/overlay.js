@@ -2146,11 +2146,15 @@
       }
       .close-btn:hover { opacity: 1; background: rgba(128, 128, 138, 0.16); }
       .sec {
+        padding-top: 0;
+        margin-top: 0;
+        border-top: none;
+      }
+      .sec + .sec {
         padding-top: 11px;
         margin-top: 11px;
         border-top: 1px solid rgba(128, 128, 138, 0.16);
       }
-      .sec:first-of-type { padding-top: 0; margin-top: 0; border-top: none; }
       .sec-title {
         font-size: 11px;
         font-weight: 600;
