@@ -363,31 +363,70 @@
   // 3. Streaming Text Ink Fade-in (CSS.highlights, Zero-DOM, 0fps Idle)
   // ===========================================================================
   const FADE_STYLE_ID = 'agy-stream-fade-style';
+  const FADE_FLUSH_STYLE_ID = 'agy-stream-flush-style';
   const FADE_DURATION_MS = 230;
   const FADE_BUCKETS = 4;
   const SUPPORTS_HIGHLIGHTS = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
-  let fadeEntries = []; // { range, startMs }
+  const bucketHighlights = SUPPORTS_HIGHLIGHTS
+    ? Array.from({ length: FADE_BUCKETS }, () => new Highlight())
+    : [];
+  let fadeEntries = []; // { range, startMs, el }
+  let dirtyFadeEls = new Set();
+  let pendingFlushEls = new Set();
   let fadeRaf = null;
+  let fadeFlushRaf = null;
   let fadeObserver = null;
   const textLenCache = new WeakMap();
 
   function ensureFadeStyles() {
     let style = document.getElementById(FADE_STYLE_ID);
+    let flushStyle = document.getElementById(FADE_FLUSH_STYLE_ID);
     if (!cfg.streamFadeIn || !SUPPORTS_HIGHLIGHTS) {
       if (style) style.remove();
+      if (flushStyle) flushStyle.remove();
       clearAllFadeHighlights();
       return;
     }
-    if (style) return;
-    style = document.createElement('style');
-    style.id = FADE_STYLE_ID;
-    style.textContent = `
-      ::highlight(agy-stream-f1) { color: color-mix(in srgb, var(--foreground, currentColor) 24%, transparent); }
-      ::highlight(agy-stream-f2) { color: color-mix(in srgb, var(--foreground, currentColor) 50%, transparent); }
-      ::highlight(agy-stream-f3) { color: color-mix(in srgb, var(--foreground, currentColor) 76%, transparent); }
-      ::highlight(agy-stream-f4) { color: color-mix(in srgb, var(--foreground, currentColor) 92%, transparent); }
-    `;
-    (document.head || document.documentElement).appendChild(style);
+    if (!flushStyle) {
+      flushStyle = document.createElement('style');
+      flushStyle.id = FADE_FLUSH_STYLE_ID;
+      flushStyle.textContent = `[data-agy-fade-flush="1"] { opacity: 0.9999; }`;
+      (document.head || document.documentElement).appendChild(flushStyle);
+    }
+    if (!style) {
+      style = document.createElement('style');
+      style.id = FADE_STYLE_ID;
+      style.textContent = `
+        ::highlight(agy-stream-f1) { color: color-mix(in srgb, var(--foreground, currentColor) 24%, transparent); }
+        ::highlight(agy-stream-f2) { color: color-mix(in srgb, var(--foreground, currentColor) 50%, transparent); }
+        ::highlight(agy-stream-f3) { color: color-mix(in srgb, var(--foreground, currentColor) 76%, transparent); }
+        ::highlight(agy-stream-f4) { color: color-mix(in srgb, var(--foreground, currentColor) 92%, transparent); }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.disabled = fadeEntries.length === 0;
+  }
+
+  function flushDirtyFadeElements(elsToFlush) {
+    if (!elsToFlush || elsToFlush.length === 0) return;
+    let added = false;
+    for (const el of elsToFlush) {
+      if (el && el.isConnected) {
+        el.setAttribute('data-agy-fade-flush', '1');
+        pendingFlushEls.add(el);
+        added = true;
+      }
+    }
+    if (!added || fadeFlushRaf) return;
+    fadeFlushRaf = requestAnimationFrame(() => {
+      fadeFlushRaf = requestAnimationFrame(() => {
+        fadeFlushRaf = null;
+        for (const el of pendingFlushEls) {
+          if (el && el.isConnected) el.removeAttribute('data-agy-fade-flush');
+        }
+        pendingFlushEls.clear();
+      });
+    });
   }
 
   function clearAllFadeHighlights() {
@@ -396,9 +435,20 @@
       cancelAnimationFrame(fadeRaf);
       fadeRaf = null;
     }
-    if (!SUPPORTS_HIGHLIGHTS) return;
-    for (let i = 1; i <= FADE_BUCKETS; i++) {
-      try { CSS.highlights.delete(`agy-stream-f${i}`); } catch (_e) {}
+    if (SUPPORTS_HIGHLIGHTS) {
+      for (let i = 0; i < FADE_BUCKETS; i++) {
+        try {
+          bucketHighlights[i]?.clear?.();
+          CSS.highlights.delete(`agy-stream-f${i + 1}`);
+        } catch (_e) {}
+      }
+    }
+    const style = document.getElementById(FADE_STYLE_ID);
+    if (style) style.disabled = true;
+    if (dirtyFadeEls.size > 0) {
+      const all = Array.from(dirtyFadeEls);
+      dirtyFadeEls.clear();
+      flushDirtyFadeElements(all);
     }
   }
 
@@ -419,10 +469,14 @@
     const e = Math.max(s, Math.min(endOffset, len));
     if (e <= s) return;
     try {
+      const style = document.getElementById(FADE_STYLE_ID);
+      if (style && style.disabled) style.disabled = false;
       const range = document.createRange();
       range.setStart(textNode, s);
       range.setEnd(textNode, e);
-      fadeEntries.push({ range, startMs: performance.now() });
+      const el = textNode.parentElement || null;
+      if (el) dirtyFadeEls.add(el);
+      fadeEntries.push({ range, startMs: performance.now(), el });
       if (fadeEntries.length > 80) fadeEntries.splice(0, fadeEntries.length - 80);
       if (!fadeRaf) fadeRaf = requestAnimationFrame(tickFadeHighlights);
     } catch (_err) {}
@@ -437,31 +491,61 @@
 
     const buckets = [[], [], [], []];
     const remaining = [];
+    const activeEls = new Set();
+    let expiredAny = false;
+
     for (const entry of fadeEntries) {
       const elapsed = now - entry.startMs;
-      if (elapsed >= FADE_DURATION_MS) continue;
-      if (!entry.range?.startContainer?.isConnected) continue;
+      if (elapsed >= FADE_DURATION_MS || !entry.range?.startContainer?.isConnected) {
+        expiredAny = true;
+        continue;
+      }
       const ratio = elapsed / FADE_DURATION_MS;
       const idx = Math.min(FADE_BUCKETS - 1, Math.floor(ratio * FADE_BUCKETS));
       buckets[idx].push(entry.range);
       remaining.push(entry);
+      if (entry.el) activeEls.add(entry.el);
     }
     fadeEntries = remaining;
 
     for (let i = 0; i < FADE_BUCKETS; i++) {
       const name = `agy-stream-f${i + 1}`;
+      const hl = bucketHighlights[i];
       try {
+        hl.clear();
         if (buckets[i].length > 0) {
-          CSS.highlights.set(name, new Highlight(...buckets[i]));
+          for (const r of buckets[i]) hl.add(r);
+          CSS.highlights.set(name, hl);
         } else {
           CSS.highlights.delete(name);
         }
       } catch (_e) {}
     }
 
-    if (fadeEntries.length > 0) {
-      fadeRaf = requestAnimationFrame(tickFadeHighlights);
+    if (fadeEntries.length === 0) {
+      const style = document.getElementById(FADE_STYLE_ID);
+      if (style) style.disabled = true;
+      if (dirtyFadeEls.size > 0) {
+        const all = Array.from(dirtyFadeEls);
+        dirtyFadeEls.clear();
+        flushDirtyFadeElements(all);
+      }
+      return;
     }
+
+    // Flush any parent element whose ranges all finished fading (fixes Blink partial-Text-node stale highlight paint)
+    if (expiredAny && dirtyFadeEls.size > 0) {
+      const settled = [];
+      for (const el of dirtyFadeEls) {
+        if (!activeEls.has(el)) {
+          settled.push(el);
+          dirtyFadeEls.delete(el);
+        }
+      }
+      if (settled.length > 0) flushDirtyFadeElements(settled);
+    }
+
+    fadeRaf = requestAnimationFrame(tickFadeHighlights);
   }
 
   function handleStreamMutations(mutations) {
@@ -521,6 +605,12 @@
       subtree: true,
     });
   }
+
+  document.addEventListener('visibilitychange', () => {
+    if (fadeEntries.length > 0 || dirtyFadeEls.size > 0) {
+      clearAllFadeHighlights();
+    }
+  });
 
   // ===========================================================================
   // 4. Composer Smooth Caret (IME & Selection Safe, Zero Idle Overhead)

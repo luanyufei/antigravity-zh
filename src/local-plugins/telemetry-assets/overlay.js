@@ -610,8 +610,7 @@
           color: ${dark ? '#a1a1aa' : '#52525b'};
         }
         .mono {
-          font-variant-numeric: tabular-nums;
-          font-family: ${FALLBACK_FONT_MONO};
+          font-family: inherit;
           font-size: 11px;
         }
         .track {
@@ -2212,7 +2211,7 @@
         margin: 8px 0 5px;
       }
       .row-inline { display: flex; justify-content: space-between; align-items: center; }
-      .mono { font-family: "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+      .mono { font-family: inherit; }
       .seg {
         display: grid;
         grid-template-columns: repeat(2, 1fr);
