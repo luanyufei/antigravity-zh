@@ -114,17 +114,18 @@
     const vibOn = Boolean(vib && vib.enabled);
     const op = typeof vib?.opacity === 'number' && Number.isFinite(vib.opacity) ? vib.opacity : 0.55;
 
-    const panelRgb = dark ? '30, 32, 42' : '252, 253, 255';
+    // Match vibrancy-assets/style.js native popup glass (popRgb / popOp)
+    const panelRgb = dark ? '24, 26, 35' : '252, 253, 255';
     const panelAlpha = vibOn
       ? (dark
-        ? Math.min(0.80, Math.max(0.56, +(op + 0.24).toFixed(2)))
-        : Math.min(0.86, Math.max(0.68, +(op + 0.30).toFixed(2))))
-      : (dark ? 0.82 : 0.86);
+        ? Math.min(0.86, Math.max(0.60, +(op + 0.28).toFixed(2)))
+        : Math.min(0.90, Math.max(0.70, +(op + 0.30).toFixed(2))))
+      : (dark ? 0.86 : 0.90);
     const fabAlpha = vibOn
       ? (dark
-        ? Math.min(0.74, Math.max(0.46, +(op + 0.14).toFixed(2)))
-        : Math.min(0.82, Math.max(0.60, +(op + 0.24).toFixed(2))))
-      : (dark ? 0.78 : 0.84);
+        ? Math.min(0.76, Math.max(0.48, +(op + 0.16).toFixed(2)))
+        : Math.min(0.84, Math.max(0.62, +(op + 0.24).toFixed(2))))
+      : (dark ? 0.80 : 0.86);
 
     const blur = vibOn ? 'blur(26px) saturate(160%)' : 'blur(22px) saturate(145%)';
     const fabBlur = vibOn ? 'blur(20px) saturate(155%)' : 'blur(16px) saturate(140%)';
@@ -420,31 +421,67 @@
     closeTelemetryPopover();
   }
 
-  function closeTelemetryPopover() {
+  let popoverStyleEl = null;
+  let popoverCardEl = null;
+  let popoverCloseTimer = null;
+
+  function closeTelemetryPopover(immediate = false) {
     popoverOpen = false;
-    if (popoverHost) popoverHost.style.display = 'none';
     if (barShadow) {
       barShadow.querySelectorAll('.bar').forEach((c) => c.classList.remove('active'));
     }
+    if (!popoverHost) return;
+    if (popoverCloseTimer) {
+      clearTimeout(popoverCloseTimer);
+      popoverCloseTimer = null;
+    }
+    if (immediate || popoverHost.style.display === 'none') {
+      popoverHost.style.display = 'none';
+      if (popoverCardEl) popoverCardEl.classList.remove('pop-in', 'pop-out');
+      return;
+    }
+    popoverHost.style.pointerEvents = 'none';
+    if (popoverCardEl) {
+      popoverCardEl.classList.remove('pop-in');
+      void popoverCardEl.offsetWidth;
+      popoverCardEl.classList.add('pop-out');
+    }
+    popoverCloseTimer = setTimeout(() => {
+      popoverCloseTimer = null;
+      if (!popoverOpen && popoverHost) {
+        popoverHost.style.display = 'none';
+        if (popoverCardEl) popoverCardEl.classList.remove('pop-in', 'pop-out');
+      }
+    }, 115);
   }
 
   function ensurePopoverHost() {
-    if (popoverHost && popoverHost.isConnected) return;
+    if (popoverHost && popoverHost.isConnected && popoverStyleEl && popoverCardEl) return;
     popoverHost = document.createElement('div');
     popoverHost.id = 'agy-telemetry-popover-host';
     popoverHost.setAttribute('data-agy-i18n-ignore', '1');
     popoverHost.setAttribute('data-agy-telemetry-ignore', '1');
+    // Keep wrapper free of transform/opacity/will-change so it NEVER creates a Backdrop Root that kills child backdrop-filter
     popoverHost.style.cssText = 'position:fixed;z-index:2147483642;display:none;pointer-events:auto;';
     popoverShadow = popoverHost.attachShadow({ mode: 'open' });
+    popoverStyleEl = document.createElement('style');
+    popoverCardEl = document.createElement('div');
+    popoverCardEl.className = 'card';
+    popoverShadow.appendChild(popoverStyleEl);
+    popoverShadow.appendChild(popoverCardEl);
     document.documentElement.appendChild(popoverHost);
   }
 
-  function renderTelemetryPopover() {
+  function renderTelemetryPopover(animateOpen = false) {
     if (!popoverOpen || !barHost || !barHost.isConnected) {
-      closeTelemetryPopover();
+      closeTelemetryPopover(true);
       return;
     }
     ensurePopoverHost();
+    if (popoverCloseTimer) {
+      clearTimeout(popoverCloseTimer);
+      popoverCloseTimer = null;
+    }
 
     const dark = detectDarkTheme();
     const zh = isZh();
@@ -479,12 +516,23 @@
     const ctxUsedStr = ctx?.usedTokens != null ? formatCompactTokens(ctx.usedTokens) : '—';
     const ctxMaxStr = ctx?.maxTokens != null ? formatCompactTokens(ctx.maxTokens) : (zh ? '未知' : 'Unknown');
     const glass = computeGlassSurface(dark);
+    const accent = detectAccentColor();
     const hostFont = detectHostFontFamily();
+    const wasHidden = popoverHost.style.display === 'none';
+    const shouldAnimate = animateOpen || wasHidden;
 
-    popoverShadow.innerHTML = `
-      <style>
+    const cssText = `
         :host { all: initial; }
+        @keyframes agy-pop-in {
+          from { opacity: 0; transform: translateY(8px) scale(0.96); }
+          to { opacity: 1; transform: none; }
+        }
+        @keyframes agy-pop-out {
+          from { opacity: 1; transform: none; }
+          to { opacity: 0; transform: translateY(5px) scale(0.97); }
+        }
         .card {
+          --agy-accent: ${accent};
           width: 316px;
           max-width: calc(100vw - 24px);
           border-radius: 14px;
@@ -500,6 +548,14 @@
           border: none;
           box-shadow: ${glass.panelShadow};
           box-sizing: border-box;
+          transform-origin: bottom right;
+        }
+        .card.pop-in {
+          animation: agy-pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .card.pop-out {
+          animation: agy-pop-out 110ms ease-in forwards;
+          pointer-events: none;
         }
         .head {
           display: flex;
@@ -516,13 +572,13 @@
           gap: 6px;
         }
         .badge {
-          font-size: 10.5px;
-          font-weight: 500;
-          padding: 1px 7px;
-          border-radius: 6px;
+          font-size: 10px;
+          font-weight: 600;
+          padding: 2px 7px;
+          border-radius: 999px;
           white-space: nowrap;
-          background: ${dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.055)'};
-          color: ${dark ? '#d4d4d8' : '#3f3f46'};
+          background: color-mix(in srgb, var(--agy-accent, #3b82f6) 15%, transparent);
+          color: var(--agy-accent, #3b82f6);
         }
         .icon-btn {
           appearance: none;
@@ -570,7 +626,7 @@
           border-radius: 999px;
           transition: width 0.25s ease;
         }
-        .fill.ok { background: ${dark ? '#d4d4d8' : '#3f3f46'}; }
+        .fill.ok { background: var(--agy-accent, #3b82f6); }
         .fill.warn { background: ${dark ? '#f59e0b' : '#d97706'}; }
         .fill.danger { background: ${dark ? '#ef4444' : '#dc2626'}; }
         .fill.muted { background: #71717a; }
@@ -618,8 +674,12 @@
         .stat-k { font-size: 10px; color: ${dark ? '#a1a1aa' : '#71717a'}; }
         .stat-v { font-size: 12px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
         .empty { font-size: 11px; color: ${dark ? '#a1a1aa' : '#71717a'}; padding: 4px 0; }
-      </style>
-      <div class="card">
+    `;
+    if (popoverStyleEl.textContent !== cssText) {
+      popoverStyleEl.textContent = cssText;
+    }
+
+    popoverCardEl.innerHTML = `
         <div class="head">
           <div class="title">
             <span>${zh ? '实时遥测' : 'Live Telemetry'}</span>
@@ -667,22 +727,28 @@
             </div>
           </div>
         </div>
-      </div>
     `;
 
-    popoverShadow.getElementById('btn-refresh')?.addEventListener('click', (e) => {
+    popoverCardEl.querySelector('#btn-refresh')?.addEventListener('click', (e) => {
       e.stopPropagation();
       void pollSnapshot(true);
     });
 
     // Anchor cleanly right above the composer bar without overflowing viewport
     const rect = barHost.getBoundingClientRect();
-    popoverHost.style.display = 'block';
     const cardW = 316;
     const left = Math.min(Math.max(12, rect.right - cardW), window.innerWidth - cardW - 12);
     const bottom = Math.max(12, window.innerHeight - rect.top + 8);
     popoverHost.style.left = `${Math.round(left)}px`;
     popoverHost.style.bottom = `${Math.round(bottom)}px`;
+    popoverHost.style.pointerEvents = 'auto';
+    popoverHost.style.display = 'block';
+
+    if (shouldAnimate) {
+      popoverCardEl.classList.remove('pop-out', 'pop-in');
+      void popoverCardEl.offsetWidth;
+      popoverCardEl.classList.add('pop-in');
+    }
   }
 
   function ensureComposerBarMounted() {
@@ -713,7 +779,7 @@
     return true;
   }
 
-  function renderComposerBar() {
+  function renderComposerBar(skipPopoverSync = false) {
     if (!ensureComposerBarMounted() || !barShadow) return;
 
     const dark = detectDarkTheme();
@@ -746,29 +812,26 @@
     const ringC = 2 * Math.PI * ringR;
     const ringOffset = remFrac != null ? ringC * (1 - remFrac) : ringC;
 
-    // Quota item text & tone (always dual-display 5h + 7d when both available)
-    let quotaText = '—';
-    let quotaTone = 'muted';
+    // Quota item HTML & independent per-window tones (5h and 7d colored separately!)
+    let quotaInnerHtml = '<span>—</span>';
     if (activeGroup && activeGroup.buckets?.length) {
       const b5 = activeGroup.buckets.find((b) => b.windowKey === '5h');
       const bW = activeGroup.buckets.find((b) => b.windowKey === 'weekly');
       const pickTone = (p) => (p == null ? 'muted' : p <= 15 ? 'danger' : p <= 35 ? 'warn' : 'ok');
 
       if (b5 && bW) {
-        quotaText = `5h ${b5.percent ?? '—'}% · 7d ${bW.percent ?? '—'}%`;
-        quotaTone = pickTone(Math.min(b5.percent ?? 100, bW.percent ?? 100));
+        const t5 = pickTone(b5.percent);
+        const tW = pickTone(bW.percent);
+        quotaInnerHtml = `<span class="tone-${t5}">5h ${b5.percent ?? '—'}%</span><span class="q-sep">·</span><span class="tone-${tW}">7d ${bW.percent ?? '—'}%</span>`;
       } else if (b5) {
-        quotaText = `5h ${b5.percent ?? '—'}%`;
-        quotaTone = pickTone(b5.percent);
+        quotaInnerHtml = `<span class="tone-${pickTone(b5.percent)}">5h ${b5.percent ?? '—'}%</span>`;
       } else if (bW) {
-        quotaText = `7d ${bW.percent ?? '—'}%`;
-        quotaTone = pickTone(bW.percent);
+        quotaInnerHtml = `<span class="tone-${pickTone(bW.percent)}">7d ${bW.percent ?? '—'}%</span>`;
       } else {
         const chosen = activeGroup.buckets[0];
         if (chosen) {
           const lbl = chosen.windowKey === 'weekly' ? '7d' : '5h';
-          quotaText = `${lbl} ${chosen.percent ?? '—'}%`;
-          quotaTone = pickTone(chosen.percent);
+          quotaInnerHtml = `<span class="tone-${pickTone(chosen.percent)}">${lbl} ${chosen.percent ?? '—'}%</span>`;
         }
       }
     }
@@ -819,8 +882,9 @@
           gap: 4px;
           white-space: nowrap;
         }
-        .item.tone-warn { color: ${warnColor}; }
-        .item.tone-danger { color: ${dangerColor}; }
+        .tone-warn { color: ${warnColor}; }
+        .tone-danger { color: ${dangerColor}; }
+        .q-sep { opacity: 0.55; margin: 0 1px; }
         .ico {
           width: 14px;
           height: 14px;
@@ -860,12 +924,12 @@
             <span>${ctxText}</span>
           </span>
         ` : ''}
-        <span class="item tone-${quotaTone}" title="${zh ? '点击查看模型额度详情' : 'Click for Model Quota details'}">
+        <span class="item" title="${zh ? '点击查看模型额度详情' : 'Click for Model Quota details'}">
           <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="8" cy="8" r="6"></circle>
             <path d="M8 4.6V8l2.3 1.4"></path>
           </svg>
-          <span>${quotaText}</span>
+          ${quotaInnerHtml}
         </span>
         ${showSpeed ? `
           <span class="item" title="${zh ? '最新流式输出速度' : 'Latest streaming output speed'}">
@@ -884,16 +948,17 @@
         popoverOpen = !popoverOpen;
         if (popoverOpen) {
           closeSettingsModal();
-          renderTelemetryPopover();
+          renderComposerBar(true);
+          renderTelemetryPopover(true);
           void pollSnapshot(false);
         } else {
           closeTelemetryPopover();
+          renderComposerBar(true);
         }
-        renderComposerBar();
       });
     });
 
-    if (popoverOpen) renderTelemetryPopover();
+    if (popoverOpen && !skipPopoverSync) renderTelemetryPopover();
   }
 
   // ---------------------------------------------------------------------------
@@ -1594,22 +1659,52 @@
   let settingsBtnEl = null;
   let settingsPanelEl = null;
 
-  function closeSettingsModal() {
+  let settingsCloseTimer = null;
+
+  function closeSettingsModal(immediate = false) {
     settingsOpen = false;
-    if (settingsPanelEl) settingsPanelEl.style.display = 'none';
     if (settingsBtnEl) settingsBtnEl.classList.remove('active');
+    if (!settingsPanelEl) return;
+    if (settingsCloseTimer) {
+      clearTimeout(settingsCloseTimer);
+      settingsCloseTimer = null;
+    }
+    if (immediate || settingsPanelEl.style.display === 'none') {
+      settingsPanelEl.style.display = 'none';
+      return;
+    }
+    settingsPanelEl.style.pointerEvents = 'none';
+    const panel = settingsPanelEl.querySelector('.panel');
+    if (panel) {
+      panel.classList.remove('pop-in');
+      panel.classList.add('pop-out');
+    }
+    settingsCloseTimer = setTimeout(() => {
+      settingsCloseTimer = null;
+      if (!settingsOpen && settingsPanelEl) {
+        settingsPanelEl.style.display = 'none';
+      }
+    }, 115);
   }
 
   function openSettingsModal() {
     closeTelemetryPopover();
     settingsOpen = true;
     ensureSettingsWidgetMounted();
-    renderSettingsPanel();
-    if (settingsPanelEl) settingsPanelEl.style.display = 'block';
+    if (settingsCloseTimer) {
+      clearTimeout(settingsCloseTimer);
+      settingsCloseTimer = null;
+    }
+    syncSettingsSurfaceVars();
+    renderSettingsPanel(true);
+    if (settingsPanelEl) {
+      settingsPanelEl.style.pointerEvents = 'auto';
+      settingsPanelEl.style.display = 'block';
+    }
     if (settingsBtnEl) settingsBtnEl.classList.add('active');
   }
 
-  function renderSettingsPanel() {
+  function renderSettingsPanel(animateOpen = false) {
     if (!settingsShadow || !settingsPanelEl) return;
     const dark = detectDarkTheme();
     const accent = detectAccentColor();
@@ -1746,7 +1841,7 @@
     `;
 
     settingsPanelEl.innerHTML = `
-      <div class="panel ${dark ? 'dark' : 'light'}" style="--agy-accent:${accent};">
+      <div class="panel ${dark ? 'dark' : 'light'}${animateOpen ? ' pop-in' : ''}" style="--agy-accent:${accent};">
         <div class="p-head">
           <div class="p-title">
             <span>antigravity-zh</span>
@@ -1887,12 +1982,11 @@
     }
   }
 
-  function updateSettingsButtonAppearance() {
-    if (!settingsHost || !settingsBtnEl) return;
+  function syncSettingsSurfaceVars() {
+    if (!settingsHost) return;
     const dark = detectDarkTheme();
     const glass = computeGlassSurface(dark);
     const hostFont = detectHostFontFamily();
-    const show = settings?.i18n?.showFloatingToggle !== false;
     settingsHost.style.setProperty('--agy-font-sans', hostFont);
     settingsHost.style.setProperty('--agy-panel-bg', glass.panelBg);
     settingsHost.style.setProperty('--agy-panel-blur', glass.blur);
@@ -1900,6 +1994,13 @@
     settingsHost.style.setProperty('--agy-fab-bg', glass.fabBg);
     settingsHost.style.setProperty('--agy-fab-blur', glass.fabBlur);
     settingsHost.style.setProperty('--agy-fab-shadow', glass.fabShadow);
+  }
+
+  function updateSettingsButtonAppearance() {
+    if (!settingsHost || !settingsBtnEl) return;
+    const dark = detectDarkTheme();
+    const show = settings?.i18n?.showFloatingToggle !== false;
+    syncSettingsSurfaceVars();
     settingsBtnEl.style.display = show ? 'inline-flex' : 'none';
     settingsBtnEl.classList.toggle('dark', dark);
     settingsBtnEl.classList.toggle('light', !dark);
@@ -1967,6 +2068,14 @@
       .fab.dragging { cursor: grabbing; opacity: 1; transform: none; }
       .fab svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
+      @keyframes agy-panel-pop-in {
+        from { opacity: 0; transform: translateY(8px) scale(0.96); }
+        to { opacity: 1; transform: none; }
+      }
+      @keyframes agy-panel-pop-out {
+        from { opacity: 1; transform: none; }
+        to { opacity: 0; transform: translateY(5px) scale(0.97); }
+      }
       .panel-slot {
         position: absolute;
         right: 0;
@@ -1985,10 +2094,18 @@
         line-height: 1.45;
         box-sizing: border-box;
         border: none;
-        background: var(--agy-panel-bg, rgba(30, 32, 42, 0.74));
+        background: var(--agy-panel-bg, rgba(24, 26, 35, 0.78));
         backdrop-filter: var(--agy-panel-blur, blur(26px) saturate(160%));
         -webkit-backdrop-filter: var(--agy-panel-blur, blur(26px) saturate(160%));
         box-shadow: var(--agy-panel-shadow, 0 16px 40px -10px rgba(0, 0, 0, 0.46));
+        transform-origin: bottom right;
+      }
+      .panel.pop-in {
+        animation: agy-panel-pop-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .panel.pop-out {
+        animation: agy-panel-pop-out 110ms ease-in forwards;
+        pointer-events: none;
       }
       .panel::-webkit-scrollbar { display: none; }
       .panel.light { color: rgba(18, 20, 28, 0.94); }
@@ -2069,9 +2186,6 @@
         color: var(--agy-accent, #3b82f6);
         border-bottom-color: var(--agy-accent, #3b82f6);
       }
-      .seg-3 {
-        grid-template-columns: repeat(3, 1fr);
-      }
       .mode-desc {
         font-size: 11px;
         opacity: 0.6;
@@ -2103,7 +2217,8 @@
         border-radius: 9px;
         background: rgba(128, 128, 138, 0.12);
       }
-      .seg-4 { grid-template-columns: repeat(4, 1fr); }
+      .seg.seg-3 { grid-template-columns: repeat(3, 1fr); }
+      .seg.seg-4 { grid-template-columns: repeat(4, 1fr); }
       .seg-btn {
         appearance: none;
         border: none;
@@ -2115,18 +2230,15 @@
         padding: 5px 6px;
         border-radius: 7px;
         cursor: pointer;
+        white-space: nowrap;
         opacity: 0.78;
-        transition: background-color 0.14s ease, opacity 0.14s ease;
+        transition: background-color 0.14s ease, opacity 0.14s ease, color 0.14s ease;
       }
       .seg-btn:hover { opacity: 1; }
       .seg-btn.active {
         opacity: 1;
-        background: #18181b;
+        background: var(--agy-accent, #3b82f6);
         color: #ffffff;
-      }
-      .panel.dark .seg-btn.active {
-        background: #f4f4f5;
-        color: #18181b;
       }
       .pills {
         display: flex;

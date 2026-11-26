@@ -529,6 +529,7 @@
   let caretEl = null;
   let caretActiveEditor = null;
   let caretComposing = false;
+  let caretUserBlurred = false;
   let caretIdleTimer = null;
   let caretRaf = null;
 
@@ -611,6 +612,9 @@
     if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
     if (!editor.contains(sel.anchorNode)) return null;
 
+    const edRect = editor.getBoundingClientRect();
+    if (!edRect || edRect.width <= 0 || edRect.height <= 0) return null;
+
     const range = sel.getRangeAt(0).cloneRange();
     range.collapse(true);
     const rects = range.getClientRects();
@@ -620,20 +624,78 @@
       const r2 = range.getBoundingClientRect();
       if (r2 && r2.height > 0) {
         rect = r2;
-      } else {
-        // Fallback for empty line / empty editor
-        const anchorEl = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
-        const box = (anchorEl && editor.contains(anchorEl) ? anchorEl : editor).getBoundingClientRect();
-        const cs = getComputedStyle(anchorEl || editor);
-        const padL = parseFloat(cs.paddingLeft) || 0;
-        const padT = parseFloat(cs.paddingTop) || 0;
-        const lh = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 14) * 1.4;
-        rect = { left: box.left + padL, top: box.top + padT, height: lh };
       }
     }
 
-    const edRect = editor.getBoundingClientRect();
-    if (!edRect || edRect.width <= 0 || edRect.height <= 0) return null;
+    // Handle Shift+Enter / <br> / element-offset positions where getClientRects() returns empty
+    if (!rect || rect.height === 0) {
+      const node = sel.anchorNode;
+      const offset = sel.anchorOffset;
+      const anchorEl = node.nodeType === 1 ? node : node.parentElement;
+      const cs = getComputedStyle(anchorEl || editor);
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      const lh = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 14) * 1.4;
+
+      if (node.nodeType === 1) {
+        const atChild = node.childNodes[offset] || null;
+        const prevChild = offset > 0 ? node.childNodes[offset - 1] : null;
+
+        // 1. Caret sits right before a <br> or inline element on the current (possibly new) line
+        if (atChild && atChild.nodeType === 1) {
+          const ar = atChild.getBoundingClientRect();
+          if (ar && ar.height > 0) {
+            rect = { left: ar.left, top: ar.top, height: ar.height };
+          }
+        }
+        // 2. Caret sits right after a <br> (e.g. Shift+Enter at end of paragraph)
+        if ((!rect || rect.height === 0) && prevChild && prevChild.nodeType === 1) {
+          const pr = prevChild.getBoundingClientRect();
+          if (pr && pr.height > 0) {
+            if (prevChild.tagName === 'BR') {
+              const blockBox = (anchorEl && editor.contains(anchorEl) ? anchorEl : editor).getBoundingClientRect();
+              const lineLeft = blockBox.left + padL;
+              // If the <br> sits at the end of a non-empty line (to the right of lineLeft),
+              // the caret is on the NEXT line below it; if it's already on a blank line, use its top.
+              const isInlineBreak = pr.left > lineLeft + 6;
+              rect = {
+                left: lineLeft,
+                top: isInlineBreak ? pr.bottom : pr.top,
+                height: pr.height || lh,
+              };
+            } else {
+              rect = { left: pr.right, top: pr.top, height: pr.height };
+            }
+          }
+        }
+        // 3. Caret sits right after a text node
+        if ((!rect || rect.height === 0) && prevChild && prevChild.nodeType === 3) {
+          const len = prevChild.nodeValue?.length || 0;
+          if (len > 0) {
+            try {
+              const tr = document.createRange();
+              tr.setStart(prevChild, len - 1);
+              tr.setEnd(prevChild, len);
+              const tRects = tr.getClientRects();
+              const lr = tRects && tRects.length > 0 ? tRects[tRects.length - 1] : null;
+              if (lr && lr.height > 0) {
+                rect = { left: lr.right, top: lr.top, height: lr.height };
+              }
+            } catch (_e) {}
+          }
+        }
+        // 4. Truly empty block element (0 text inside this block, e.g. blank editor or new <p></p>)
+        if ((!rect || rect.height === 0) && offset === 0 && (node.textContent || '').length === 0) {
+          const box = node.getBoundingClientRect();
+          if (box && box.height > 0) {
+            const padT = parseFloat(cs.paddingTop) || 0;
+            rect = { left: box.left + padL, top: box.top + padT, height: lh };
+          }
+        }
+      }
+    }
+
+    // Never jump to an uncertain fallback coordinate: if unmeasurable, yield cleanly to native caret
+    if (!rect || rect.height <= 0) return null;
     if (rect.top < edRect.top - 4 || rect.top > edRect.bottom + 4) return null;
     if (rect.left < edRect.left - 4 || rect.left > edRect.right + 4) return null;
     const h = Math.max(14, Math.min(28, rect.height || 18));
@@ -657,7 +719,7 @@
 
   function updateCaretNow() {
     caretRaf = null;
-    if (!cfg.smoothCaret || caretComposing) {
+    if (!cfg.smoothCaret || caretComposing || caretUserBlurred || !document.hasFocus()) {
       hideCaret(true);
       return;
     }
@@ -689,7 +751,7 @@
 
     if (caretIdleTimer) clearTimeout(caretIdleTimer);
     caretIdleTimer = setTimeout(() => {
-      if (caretEl && caretEl.style.opacity === '1') {
+      if (caretEl && caretEl.style.opacity === '1' && !caretUserBlurred && document.hasFocus()) {
         caretEl.classList.add('blinking');
       }
     }, 480);
@@ -702,20 +764,56 @@
   }
 
   document.addEventListener('selectionchange', scheduleCaretUpdate, true);
-  document.addEventListener('input', scheduleCaretUpdate, true);
+  document.addEventListener('input', () => {
+    caretUserBlurred = false;
+    scheduleCaretUpdate();
+  }, true);
+  document.addEventListener('keydown', (ev) => {
+    if (isComposerEditable(document.activeElement)) {
+      caretUserBlurred = false;
+      scheduleCaretUpdate();
+    }
+  }, true);
   document.addEventListener('keyup', scheduleCaretUpdate, true);
   document.addEventListener('mouseup', scheduleCaretUpdate, true);
-  document.addEventListener('focusin', scheduleCaretUpdate, true);
-  document.addEventListener('focusout', () => hideCaret(true), true);
-  document.addEventListener('pointerdown', (ev) => {
-    if (!caretActiveEditor) return;
-    const pathArr = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
-    if (!pathArr.includes(caretActiveEditor)) hideCaret(true);
+  document.addEventListener('focusin', (ev) => {
+    if (isComposerEditable(ev.target)) {
+      caretUserBlurred = false;
+      scheduleCaretUpdate();
+    } else {
+      caretUserBlurred = true;
+      hideCaret(true);
+    }
   }, true);
+  document.addEventListener('focusout', () => {
+    caretUserBlurred = true;
+    hideCaret(true);
+  }, true);
+  document.addEventListener('pointerdown', (ev) => {
+    const pathArr = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+    const hitEditor = pathArr.some((el) => isComposerEditable(el));
+    if (hitEditor) {
+      caretUserBlurred = false;
+      scheduleCaretUpdate();
+    } else {
+      caretUserBlurred = true;
+      hideCaret(true);
+    }
+  }, true);
+  window.addEventListener('blur', () => {
+    caretUserBlurred = true;
+    hideCaret(true);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      caretUserBlurred = true;
+      hideCaret(true);
+    }
+  });
   window.addEventListener('resize', scheduleCaretUpdate);
   window.addEventListener('agy-layout-shift', scheduleCaretUpdate);
   document.addEventListener('scroll', () => {
-    if (caretActiveEditor) scheduleCaretUpdate();
+    if (caretActiveEditor && !caretUserBlurred) scheduleCaretUpdate();
   }, true);
   document.addEventListener('compositionstart', () => {
     caretComposing = true;
