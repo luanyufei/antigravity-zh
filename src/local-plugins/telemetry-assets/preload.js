@@ -20,6 +20,8 @@ const { contextBridge, ipcRenderer } = require('electron');
     contextBridge.exposeInMainWorld('__AGY_TELEMETRY_API__', {
       getSnapshot: (opts) => ipcRenderer.invoke('agy-telemetry:get-snapshot', opts || {}),
       getQuota: (opts) => ipcRenderer.invoke('agy-telemetry:get-quota', opts || {}),
+      getUsageSummary: (opts) => ipcRenderer.invoke('agy-telemetry:get-usage-summary', opts || {}),
+      openLocalFile: (opts) => ipcRenderer.invoke('agy-telemetry:open-local-file', opts || {}),
       getAllSettings: () => ipcRenderer.invoke('agy-settings:get-all'),
       setLocale: (locale) => ipcRenderer.invoke('agy-settings:set-locale', locale),
       setFloatingButton: (show) => ipcRenderer.invoke('agy-settings:set-floating', Boolean(show)),

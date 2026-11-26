@@ -16,10 +16,24 @@
     i18n: { locale: 'zh-CN', showFloatingToggle: true },
     vibrancy: null,
     vibrancyMeta: null,
-    telemetry: { showComposerBar: true, showTurnFooter: true, quotaWindow: 'auto' },
+    telemetry: {
+      showComposerBar: true,
+      showTurnFooter: true,
+      showHomeDashboard: true,
+      mergeVariantUsage: false,
+      fileOpenMode: 'sidebar',
+      codeBlockEnhance: true,
+      streamFadeIn: true,
+      smoothCaret: true,
+      quotaWindow: 'both',
+    },
   };
 
   let snapshot = { quota: null, session: null };
+  let usageSummary = null;
+  let usageSummaryLoading = false;
+  let homeRangeKey = 'all'; // 'all' | 'today' | '7d' | '30d'
+  let settingsTab = 'general'; // 'general' | 'experience'
   let popoverOpen = false;
   let settingsOpen = false;
   let currentRouteId = null;
@@ -136,6 +150,7 @@
   function formatCompactTokens(n) {
     if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
     const v = Math.max(0, Number(n));
+    if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2).replace(/\.?0+$/, '')}B`;
     if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`;
     if (v >= 1_000) return `${(v / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
     return String(Math.round(v));
@@ -882,6 +897,696 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Piece 2b: New Chat Home Page Usage Dashboard (Prism-style Placement, Clean-Room MIT)
+  // ---------------------------------------------------------------------------
+  let homeHost = null;
+  let homeShadow = null;
+  let homeAnchorParent = null;
+
+  function unmountHomeDashboard() {
+    if (homeHost && homeHost.isConnected) homeHost.remove();
+    homeHost = null;
+    homeShadow = null;
+    homeAnchorParent = null;
+  }
+
+  function findHomeGreetingMountTarget() {
+    if (extractRouteConversationId()) return null;
+    const hasMessages = Boolean(document.querySelector('[data-testid="cascade-system-message-toolbar"], [data-testid="user-message"]'));
+    if (hasMessages) return null;
+
+    // Measure visible composer width so the Studio card aligns seamlessly with the input box
+    const composer = document.querySelector('.surface-composer');
+    const composerW = (composer && isElementVisibleInComposer(composer))
+      ? Math.round(composer.getBoundingClientRect().width)
+      : 0;
+    const widthPx = composerW >= 420 ? Math.min(720, composerW) : 640;
+
+    // 1. Primary: mount right below the center greeting ("很高兴见到你..." / "欢迎回来...")
+    const greeting = document.querySelector('[data-testid="home-greeting"]');
+    if (greeting && isElementVisibleInComposer(greeting) && greeting.parentElement) {
+      let anchor = greeting;
+      let parent = greeting.parentElement;
+      for (let i = 0; i < 3 && parent && parent !== document.body; i++) {
+        const cs = getComputedStyle(parent);
+        if (cs.display === 'flex' && cs.flexDirection === 'row') {
+          anchor = parent;
+          parent = parent.parentElement;
+        } else {
+          break;
+        }
+      }
+      if (parent && parent !== document.body) {
+        return { parent, refNode: anchor, position: 'afterend', widthPx };
+      }
+    }
+
+    // 2. Fallback: insert directly ABOVE the composer block (never underneath it)
+    if (composer && isElementVisibleInComposer(composer) && composer.parentElement) {
+      let block = composer;
+      const p = composer.parentElement;
+      if (p && p.parentElement && p.parentElement !== document.body && p.children.length <= 3) {
+        const pr = p.getBoundingClientRect();
+        if (pr.height > 0 && pr.height <= 260) block = p;
+      }
+      if (block.parentElement) {
+        return { parent: block.parentElement, refNode: block, position: 'beforebegin', widthPx };
+      }
+    }
+
+    return null;
+  }
+
+  async function refreshUsageSummary(force = false) {
+    const api = window.__AGY_TELEMETRY_API__;
+    if (!api || typeof api.getUsageSummary !== 'function') return;
+    if (usageSummaryLoading && !force) return;
+    usageSummaryLoading = true;
+    renderHomeDashboard();
+    try {
+      const res = await api.getUsageSummary({ force });
+      if (res && res.ok) {
+        usageSummary = res;
+      }
+    } catch (_e) {}
+    usageSummaryLoading = false;
+    renderHomeDashboard();
+  }
+
+  function renderHomeDashboard() {
+    if (settings?.telemetry?.showHomeDashboard === false) {
+      unmountHomeDashboard();
+      return;
+    }
+    const target = findHomeGreetingMountTarget();
+    if (!target || !target.parent || !target.refNode) {
+      unmountHomeDashboard();
+      return;
+    }
+
+    if (!homeHost || !homeHost.isConnected || homeAnchorParent !== target.parent) {
+      unmountHomeDashboard();
+      homeAnchorParent = target.parent;
+      homeHost = document.createElement('div');
+      homeHost.id = 'agy-home-dashboard-host';
+      homeHost.setAttribute('data-agy-i18n-ignore', '1');
+      homeHost.setAttribute('data-agy-telemetry-ignore', '1');
+      homeShadow = homeHost.attachShadow({ mode: 'open' });
+      target.refNode.insertAdjacentElement(target.position, homeHost);
+    }
+
+    homeHost.style.cssText = `display:block;width:min(${target.widthPx}px, calc(100% - 24px));max-width:100%;margin:16px auto 20px;box-sizing:border-box;flex-shrink:0;`;
+
+    if (!usageSummary && !usageSummaryLoading) {
+      void refreshUsageSummary(false);
+    }
+
+    const dark = detectDarkTheme();
+    const accent = detectAccentColor();
+    const hostFont = detectHostFontFamily();
+    const zh = isZh();
+
+    // Softer, composer-matched translucent glass so it sits naturally on the wallpaper
+    const vib = settings?.vibrancy || window.__AGY_VIBRANCY_CFG__ || null;
+    const vibOn = Boolean(vib && vib.enabled);
+    const op = typeof vib?.opacity === 'number' && Number.isFinite(vib.opacity) ? vib.opacity : 0.55;
+    const cardRgb = dark ? '26, 28, 38' : '255, 255, 255';
+    const cardAlpha = vibOn
+      ? (dark ? Math.min(0.68, Math.max(0.36, +(op + 0.08).toFixed(2))) : Math.min(0.76, Math.max(0.46, +(op + 0.14).toFixed(2))))
+      : (dark ? 0.72 : 0.78);
+    const hairline = dark ? 'rgba(255, 255, 255, 0.095)' : 'rgba(15, 20, 35, 0.085)';
+    const innerHi = dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.85)';
+    const cardShadow = dark
+      ? `inset 0 1px 0 ${innerHi}, 0 0 0 1px ${hairline}, 0 12px 32px -12px rgba(0, 0, 0, 0.42)`
+      : `inset 0 1px 0 ${innerHi}, 0 0 0 1px ${hairline}, 0 10px 28px -12px rgba(15, 20, 35, 0.12)`;
+
+    const rangeData = usageSummary?.ranges?.[homeRangeKey] || usageSummary?.ranges?.['30d'] || null;
+    const totalTok = rangeData ? formatCompactTokens(rangeData.totalTokens) : (usageSummaryLoading ? '…' : '0');
+    const outTok = rangeData ? formatCompactTokens(rangeData.totalOutput) : '—';
+    const cacheStr = rangeData?.cacheHitPct != null ? `${rangeData.cacheHitPct}%` : '—';
+    const convCount = rangeData ? rangeData.conversations : 0;
+    const callCount = rangeData ? rangeData.calls : 0;
+
+    const formatUsd = (v) => {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return '';
+      if (v >= 100) return `≈ $${v.toFixed(0)}`;
+      if (v >= 10) return `≈ $${v.toFixed(1)}`;
+      return `≈ $${v.toFixed(2)}`;
+    };
+    const usdStr = rangeData?.estUsd > 0 ? formatUsd(rangeData.estUsd) : '';
+
+    const daily = Array.isArray(rangeData?.daily) ? rangeData.daily : [];
+    const maxDayTok = daily.reduce((m, d) => Math.max(m, d.totalTokens || 0), 0);
+    const models = Array.isArray(rangeData?.models) ? rangeData.models.slice(0, 5) : [];
+
+    // Distinct refined colors for top 5 models (first model follows user's live accent color)
+    const modelColors = [
+      accent,
+      dark ? '#60a5fa' : '#2563eb',
+      dark ? '#2dd4bf' : '#0d9488',
+      dark ? '#fbbf24' : '#d97706',
+      dark ? '#94a3b8' : '#64748b',
+    ];
+
+    // Left column visual:
+    // - all (总览): Prism/GitHub-style 7-row x 20-col contribution heatmap
+    // - 30d: 10x3 luminous tile grid
+    // - 7d: 7 crisp vertical bars with subtle labels
+    // - today: stacked model share bar + cache efficiency bar
+    let visualHtml = '';
+    let hoverDayList = [];
+    const heatCells = Array.isArray(usageSummary?.heatmap?.cells) ? usageSummary.heatmap.cells : [];
+    if (homeRangeKey === 'all') {
+      const cells = heatCells.length > 0
+        ? heatCells
+        : Array.from({ length: 140 }, () => ({ dateKey: '', label: '', totalTokens: 0, outputTokens: 0, calls: 0, conversations: 0, cacheHitPct: null, estUsd: 0, models: [], level: 0 }));
+      hoverDayList = cells;
+      const cellsHtml = cells.map((c, idx) => `<div class="h-cell lv-${c.level || 0}" data-day-idx="${idx}"></div>`).join('');
+      const firstLbl = cells[0]?.label || '';
+      const midLbl = cells[Math.floor(cells.length / 2)]?.label || '';
+      const lastLbl = cells[cells.length - 1]?.label || '';
+      visualHtml = `
+        <div class="heat-grid" data-hover-zone="1">${cellsHtml}</div>
+        <div class="axis-row">
+          <span>${firstLbl}</span>
+          <span>${midLbl}</span>
+          <span>${lastLbl}</span>
+        </div>
+      `;
+    } else if (homeRangeKey === '30d' && daily.length > 0) {
+      hoverDayList = daily;
+      const tiles = daily.map((d, idx) => {
+        const ratio = maxDayTok > 0 ? (d.totalTokens || 0) / maxDayTok : 0;
+        const lvl = d.totalTokens <= 0 ? 0 : (ratio >= 0.72 ? 4 : ratio >= 0.40 ? 3 : ratio >= 0.14 ? 2 : 1);
+        return `<div class="tile lv-${lvl}" data-day-idx="${idx}"></div>`;
+      }).join('');
+      visualHtml = `
+        <div class="tile-grid" data-hover-zone="1">${tiles}</div>
+        <div class="axis-row">
+          <span>${daily[0]?.label || ''}</span>
+          <span>${daily[Math.floor(daily.length / 2)]?.label || ''}</span>
+          <span>${daily[daily.length - 1]?.label || ''}</span>
+        </div>
+      `;
+    } else if (homeRangeKey === '7d' && daily.length > 0) {
+      hoverDayList = daily;
+      visualHtml = `
+        <div class="bars-7" data-hover-zone="1">
+          ${daily.map((d, idx) => {
+            const hPct = maxDayTok > 0 ? Math.max(d.totalTokens > 0 ? 12 : 4, Math.round((d.totalTokens / maxDayTok) * 100)) : 4;
+            return `
+              <div class="b7-col" data-day-idx="${idx}">
+                <div class="b7-track"><div class="b7-fill ${d.totalTokens > 0 ? 'on' : ''}" style="height:${hPct}%;"></div></div>
+                <span class="b7-lbl">${d.label}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    } else {
+      const segs = models.length > 0
+        ? models.map((m, idx) => `<div class="seg-bar-part" style="width:${Math.max(2, m.sharePct)}%;background:${modelColors[idx % modelColors.length]};" title="${m.name} · ${formatCompactTokens(m.totalTokens)} (${m.sharePct}%)"></div>`).join('')
+        : `<div class="seg-bar-part" style="width:100%;background:${dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'};"></div>`;
+      const hitNum = rangeData?.cacheHitPct != null ? rangeData.cacheHitPct : 0;
+      visualHtml = `
+        <div class="today-vis">
+          <div class="tv-lbl"><span>${zh ? '今日模型占比' : 'Today Model Mix'}</span><span>${convCount} ${zh ? '对话' : 'chats'}</span></div>
+          <div class="seg-bar">${segs}</div>
+          <div class="tv-lbl" style="margin-top:10px;"><span>${zh ? '提示词缓存命中' : 'Prompt Cache Hit'}</span><span>${cacheStr}</span></div>
+          <div class="seg-bar"><div class="seg-bar-part" style="width:${hitNum}%;background:var(--agy-accent);"></div></div>
+        </div>
+      `;
+    }
+
+    const renderModelsListHtml = (list, emptyText) => {
+      const arr = Array.isArray(list) ? list.slice(0, 5) : [];
+      if (arr.length === 0) {
+        return `<div class="empty-msg">${emptyText}</div>`;
+      }
+      return arr.map((m, idx) => {
+        const c = modelColors[idx % modelColors.length];
+        const mUsd = m.estUsd > 0 ? ` · ${formatUsd(m.estUsd)}` : '';
+        return `
+          <div class="m-item" title="${m.name} · ${formatCompactTokens(m.totalTokens)}${mUsd} (${zh ? '输出' : 'Out'} ${formatCompactTokens(m.outputTokens)} · ${m.calls}${zh ? '次' : 'x'})">
+            <div class="m-top">
+              <span class="m-name"><i class="m-dot" style="background:${c};"></i>${m.name}</span>
+              <span class="m-pct">${m.sharePct}%</span>
+            </div>
+            <div class="m-track"><div class="m-fill" style="width:${Math.max(4, m.sharePct)}%;background:${c};"></div></div>
+          </div>
+        `;
+      }).join('');
+    };
+
+    const defaultEmptyModelMsg = usageSummaryLoading
+      ? (zh ? '正在统计历史对话…' : 'Scanning history…')
+      : (zh ? '该时间段暂无记录' : 'No activity yet');
+    const modelsHtml = renderModelsListHtml(models, defaultEmptyModelMsg);
+
+    // Quiet footer quota line in right column
+    const quota = snapshot?.quota || null;
+    const g0 = pickActiveQuotaGroup(quota, getDisplayedModelLabelFromDom());
+    const b5 = g0?.buckets?.find((b) => b.windowKey === '5h');
+    const bW = g0?.buckets?.find((b) => b.windowKey === 'weekly');
+    const quotaFootParts = [];
+    if (b5?.percent != null) quotaFootParts.push(`5h ${b5.percent}%`);
+    if (bW?.percent != null) quotaFootParts.push(`7d ${bW.percent}%`);
+    const otherAppLabel = settings?.variant === 'insiders' ? (zh ? '普通版' : 'Stable') : 'Insiders';
+    const mergeHint = (usageSummary?.mergeEnabled && usageSummary?.otherVariantMissing)
+      ? (zh ? ` · 需打开一次${otherAppLabel}同步` : ` · Open ${otherAppLabel} once to sync`)
+      : '';
+    const planBadge = (quota?.planName || (settings?.variant === 'insiders' ? 'Insiders' : (zh ? '正式版' : 'Stable'))) + mergeHint;
+
+    homeShadow.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .studio {
+          --agy-accent: ${accent};
+          width: 100%;
+          height: 248px;
+          box-sizing: border-box;
+          display: grid;
+          grid-template-columns: 1.32fr 1fr;
+          border-radius: 16px;
+          font-family: ${hostFont};
+          font-size: 12px;
+          line-height: 1.4;
+          -webkit-font-smoothing: antialiased;
+          color: ${dark ? 'rgba(244, 246, 252, 0.92)' : 'rgba(18, 20, 28, 0.90)'};
+          background: rgba(${cardRgb}, ${cardAlpha});
+          backdrop-filter: blur(24px) saturate(160%);
+          -webkit-backdrop-filter: blur(24px) saturate(160%);
+          box-shadow: ${cardShadow};
+          overflow: hidden;
+          user-select: none;
+        }
+        @media (max-width: 560px) {
+          .studio { grid-template-columns: 1fr; height: auto; }
+          .col-r { border-left: none !important; border-top: 1px solid ${hairline}; }
+        }
+        .col-l, .col-r {
+          padding: 13px 16px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          min-width: 0;
+          height: 100%;
+          box-sizing: border-box;
+        }
+        .vis-box {
+          height: 126px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+        .col-r {
+          border-left: 1px solid ${hairline};
+        }
+        .col-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          margin-bottom: 10px;
+        }
+        .lbl {
+          font-size: 11px;
+          font-weight: 500;
+          opacity: 0.58;
+          letter-spacing: 0.01em;
+        }
+        .ranges {
+          display: inline-flex;
+          gap: 2px;
+          padding: 2px;
+          border-radius: 7px;
+          background: ${dark ? 'rgba(255,255,255,0.06)' : 'rgba(15,20,35,0.05)'};
+        }
+        .r-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          color: inherit;
+          font: inherit;
+          font-size: 10.5px;
+          font-weight: 500;
+          padding: 2px 7px;
+          border-radius: 5px;
+          cursor: pointer;
+          opacity: 0.62;
+          transition: background-color 0.14s ease, opacity 0.14s ease, color 0.14s ease;
+        }
+        .r-btn:hover { opacity: 1; }
+        .r-btn.active {
+          opacity: 1;
+          background: ${dark ? 'rgba(255,255,255,0.14)' : 'rgba(15,20,35,0.09)'};
+        }
+        .ref-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          color: inherit;
+          width: 22px;
+          height: 22px;
+          border-radius: 6px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          opacity: 0.52;
+          transition: opacity 0.14s ease, background-color 0.14s ease;
+        }
+        .ref-btn:hover {
+          opacity: 1;
+          background: ${dark ? 'rgba(255,255,255,0.08)' : 'rgba(15,20,35,0.06)'};
+        }
+        /* Overview GitHub/Prism-style 7-row contribution heatmap */
+        .heat-grid {
+          display: grid;
+          grid-template-rows: repeat(7, 1fr);
+          grid-auto-flow: column;
+          grid-auto-columns: minmax(0, 1fr);
+          gap: 3px;
+        }
+        .h-cell {
+          aspect-ratio: 1 / 1;
+          min-height: 8px;
+          border-radius: 2.5px;
+          transition: transform 0.12s ease, filter 0.12s ease;
+        }
+        .h-cell:hover { transform: scale(1.25); filter: brightness(1.12); position: relative; z-index: 2; }
+        /* 30d luminous tile grid (10 x 3) */
+        .tile-grid {
+          display: grid;
+          grid-template-columns: repeat(10, minmax(0, 1fr));
+          gap: 5px;
+        }
+        .tile {
+          height: 26px;
+          border-radius: 5px;
+          transition: transform 0.12s ease, filter 0.12s ease;
+        }
+        .tile:hover { transform: scale(1.16); filter: brightness(1.1); }
+        .lv-0 { background: ${dark ? 'rgba(255,255,255,0.06)' : 'rgba(15,20,35,0.055)'}; }
+        .lv-1 { background: color-mix(in srgb, var(--agy-accent) 26%, ${dark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.5)'}); }
+        .lv-2 { background: color-mix(in srgb, var(--agy-accent) 50%, transparent); }
+        .lv-3 { background: color-mix(in srgb, var(--agy-accent) 76%, transparent); }
+        .lv-4 { background: var(--agy-accent); }
+        .axis-row {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 5px;
+          font-size: 9.5px;
+          opacity: 0.45;
+        }
+        /* 7d vertical bars */
+        .bars-7 {
+          display: grid;
+          grid-template-columns: repeat(7, minmax(0, 1fr));
+          gap: 7px;
+          align-items: end;
+        }
+        .b7-col {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+        }
+        .b7-track {
+          width: 100%;
+          height: 86px;
+          display: flex;
+          align-items: flex-end;
+        }
+        .b7-fill {
+          width: 100%;
+          border-radius: 4px 4px 2px 2px;
+          background: ${dark ? 'rgba(255,255,255,0.07)' : 'rgba(15,20,35,0.06)'};
+          transition: height 0.25s ease;
+        }
+        .b7-fill.on {
+          background: color-mix(in srgb, var(--agy-accent) 76%, transparent);
+        }
+        .b7-col:hover .b7-fill.on { background: var(--agy-accent); }
+        .b7-lbl { font-size: 9.5px; opacity: 0.5; }
+        /* Today visual */
+        .today-vis { padding: 2px 0 4px; }
+        .tv-lbl {
+          display: flex;
+          justify-content: space-between;
+          font-size: 10.5px;
+          opacity: 0.62;
+          margin-bottom: 5px;
+        }
+        .seg-bar {
+          display: flex;
+          height: 6px;
+          border-radius: 999px;
+          overflow: hidden;
+          gap: 2px;
+          background: ${dark ? 'rgba(255,255,255,0.07)' : 'rgba(15,20,35,0.06)'};
+        }
+        .seg-bar-part { height: 100%; border-radius: 999px; }
+
+        /* Hero summary line */
+        .hero {
+          margin-top: 12px;
+          padding-top: 9px;
+          border-top: 1px solid ${hairline};
+        }
+        .hero-main {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+        .hero-num {
+          font-size: 19px;
+          font-weight: 600;
+          letter-spacing: -0.025em;
+          line-height: 1.15;
+        }
+        .hero-unit {
+          font-size: 11px;
+          opacity: 0.56;
+        }
+        .lbl-date {
+          margin-left: 6px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--agy-accent);
+          opacity: 0.95;
+        }
+        .h-cell, .tile, .b7-col { cursor: pointer; }
+        .h-cell.hovered, .tile.hovered { outline: 1.5px solid var(--agy-accent); outline-offset: 1px; }
+        .b7-col.hovered .b7-lbl { opacity: 1; color: var(--agy-accent); font-weight: 600; }
+        .hero-usd {
+          margin-left: auto;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--agy-accent);
+          opacity: 0.92;
+          white-space: nowrap;
+        }
+        .hero-sub {
+          margin-top: 3px;
+          font-size: 11px;
+          opacity: 0.62;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        /* Right column: models */
+        .m-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          flex: 1;
+          justify-content: center;
+        }
+        .m-item { display: flex; flex-direction: column; gap: 2.5px; }
+        .m-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
+          font-size: 11.5px;
+        }
+        .m-name {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          opacity: 0.88;
+        }
+        .m-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .m-pct {
+          font-size: 11px;
+          font-weight: 500;
+          opacity: 0.68;
+          flex-shrink: 0;
+        }
+        .m-track {
+          height: 3.5px;
+          border-radius: 999px;
+          background: ${dark ? 'rgba(255,255,255,0.08)' : 'rgba(15,20,35,0.07)'};
+          overflow: hidden;
+        }
+        .m-fill {
+          height: 100%;
+          border-radius: 999px;
+          opacity: 0.88;
+        }
+        .r-foot {
+          margin-top: 10px;
+          padding-top: 8px;
+          border-top: 1px solid ${hairline};
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 10.5px;
+          opacity: 0.56;
+        }
+        .empty-msg {
+          font-size: 11px;
+          opacity: 0.52;
+          text-align: center;
+          padding: 14px 0;
+        }
+      </style>
+      <div class="studio">
+        <div class="col-l">
+          <div>
+            <div class="col-head">
+              <span class="lbl">${zh ? '活跃轨迹' : 'Activity'}<span class="lbl-date" id="agy-hover-date"></span></span>
+              <div class="ranges">
+                <button type="button" class="r-btn ${homeRangeKey === 'all' ? 'active' : ''}" data-range="all">${zh ? '总览' : 'All'}</button>
+                <button type="button" class="r-btn ${homeRangeKey === 'today' ? 'active' : ''}" data-range="today">${zh ? '今日' : 'Today'}</button>
+                <button type="button" class="r-btn ${homeRangeKey === '7d' ? 'active' : ''}" data-range="7d">${zh ? '7天' : '7d'}</button>
+                <button type="button" class="r-btn ${homeRangeKey === '30d' ? 'active' : ''}" data-range="30d">${zh ? '30天' : '30d'}</button>
+              </div>
+            </div>
+            <div class="vis-box">${visualHtml}</div>
+          </div>
+          <div class="hero">
+            <div class="hero-main">
+              <span class="hero-num" id="agy-hero-num">${totalTok}</span>
+              <span class="hero-unit">tokens</span>
+              <span class="hero-usd" id="agy-hero-usd" title="${zh ? '按官方 Developer API 公开费率折算的参考金额（已区分普通输入、缓存读与输出）' : 'Estimated equivalent Developer API cost (separating uncached input, cache reads, and output)'}">${usdStr}</span>
+            </div>
+            <div class="hero-sub" id="agy-hero-sub">${zh ? `输出 ${outTok} · 缓存 ${cacheStr} · ${convCount} 对话 · ${callCount} 次` : `Out ${outTok} · Cache ${cacheStr} · ${convCount} chats · ${callCount} calls`}</div>
+          </div>
+        </div>
+        <div class="col-r">
+          <div class="col-head">
+            <span class="lbl">${zh ? '模型分布' : 'Models'}</span>
+            <button type="button" class="ref-btn" id="btn-home-ref" title="${zh ? '刷新统计' : 'Refresh usage'}">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.7"></path>
+                <path d="M13.5 2.5v2.8h-2.8"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="m-list" id="agy-models-list">${modelsHtml}</div>
+          <div class="r-foot">
+            <span>${planBadge}</span>
+            <span>${quotaFootParts.length ? quotaFootParts.join(' · ') : (zh ? '本地统计' : 'Local rollup')}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Live hover-to-inspect daily stats on All / 30d / 7d (restores full range stats on mouseleave)
+    const hoverZone = homeShadow.querySelector('[data-hover-zone="1"]');
+    if (hoverZone && hoverDayList.length > 0) {
+      const heroNumEl = homeShadow.getElementById('agy-hero-num');
+      const heroUsdEl = homeShadow.getElementById('agy-hero-usd');
+      const heroSubEl = homeShadow.getElementById('agy-hero-sub');
+      const hoverDateEl = homeShadow.getElementById('agy-hover-date');
+      const modelsListEl = homeShadow.getElementById('agy-models-list');
+
+      const defaultSubText = zh
+        ? `输出 ${outTok} · 缓存 ${cacheStr} · ${convCount} 对话 · ${callCount} 次`
+        : `Out ${outTok} · Cache ${cacheStr} · ${convCount} chats · ${callCount} calls`;
+
+      let activeHoverEl = null;
+
+      const showDayStats = (dayObj) => {
+        if (!dayObj) return;
+        const dTok = dayObj.totalTokens > 0 ? formatCompactTokens(dayObj.totalTokens) : '0';
+        const dOut = formatCompactTokens(dayObj.outputTokens || 0);
+        const dCache = dayObj.cacheHitPct != null ? `${dayObj.cacheHitPct}%` : '—';
+        const dConvs = dayObj.conversations || 0;
+        const dCalls = dayObj.calls || 0;
+        const dUsd = dayObj.estUsd > 0 ? formatUsd(dayObj.estUsd) : '';
+        if (hoverDateEl) hoverDateEl.textContent = dayObj.dateKey || dayObj.label || '';
+        if (heroNumEl) heroNumEl.textContent = dTok;
+        if (heroUsdEl) heroUsdEl.textContent = dUsd;
+        if (heroSubEl) {
+          heroSubEl.textContent = dCalls > 0
+            ? (zh ? `输出 ${dOut} · 缓存 ${dCache} · ${dConvs} 对话 · ${dCalls} 次` : `Out ${dOut} · Cache ${dCache} · ${dConvs} chats · ${dCalls} calls`)
+            : (zh ? `${dayObj.dateKey || dayObj.label || ''} · 当日无用量记录` : `${dayObj.dateKey || dayObj.label || ''} · No activity`);
+        }
+        if (modelsListEl) {
+          modelsListEl.innerHTML = renderModelsListHtml(
+            dayObj.models || [],
+            zh ? '当日无模型调用' : 'No model calls on this day'
+          );
+        }
+      };
+
+      const restoreRangeStats = () => {
+        if (activeHoverEl) {
+          activeHoverEl.classList.remove('hovered');
+          activeHoverEl = null;
+        }
+        if (hoverDateEl) hoverDateEl.textContent = '';
+        if (heroNumEl) heroNumEl.textContent = totalTok;
+        if (heroUsdEl) heroUsdEl.textContent = usdStr;
+        if (heroSubEl) heroSubEl.textContent = defaultSubText;
+        if (modelsListEl) modelsListEl.innerHTML = modelsHtml;
+      };
+
+      hoverZone.addEventListener('mouseover', (ev) => {
+        const cell = ev.target?.closest?.('[data-day-idx]');
+        if (!cell) return;
+        if (cell === activeHoverEl) return;
+        if (activeHoverEl) activeHoverEl.classList.remove('hovered');
+        activeHoverEl = cell;
+        cell.classList.add('hovered');
+        const idx = Number(cell.getAttribute('data-day-idx'));
+        if (Number.isInteger(idx) && hoverDayList[idx]) {
+          showDayStats(hoverDayList[idx]);
+        }
+      });
+
+      hoverZone.addEventListener('mouseleave', () => restoreRangeStats());
+    }
+
+    homeShadow.querySelectorAll('[data-range]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        homeRangeKey = b.getAttribute('data-range') || '7d';
+        renderHomeDashboard();
+      });
+    });
+    homeShadow.getElementById('btn-home-ref')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void refreshUsageSummary(true);
+    });
+
+    // Notify smooth-caret to re-sync position after layout insertion
+    window.dispatchEvent(new Event('agy-layout-shift'));
+  }
+
+  // ---------------------------------------------------------------------------
   // Piece 3: Bottom-Right Floating Settings Icon & Unified Settings Modal
   // ---------------------------------------------------------------------------
   let settingsHost = null;
@@ -912,16 +1617,30 @@
     const loc = settings?.i18n?.locale || 'zh-CN';
     const showFloat = settings?.i18n?.showFloatingToggle !== false;
     const vib = settings?.vibrancy;
-    const tel = settings?.telemetry || { showComposerBar: true, showTurnFooter: true, quotaWindow: 'auto' };
+    const tel = settings?.telemetry || {
+      showComposerBar: true,
+      showTurnFooter: true,
+      showHomeDashboard: true,
+      mergeVariantUsage: false,
+      fileOpenMode: 'sidebar',
+      codeBlockEnhance: true,
+      streamFadeIn: true,
+      smoothCaret: true,
+    };
     const variantLabel = settings?.variant === 'insiders' ? 'Insiders' : (zh ? '正式版' : 'Stable');
-
     const opacityPct = vib ? Math.round((vib.opacity ?? 0.55) * 100) : 55;
+    const fileMode = ['sidebar', 'finder', 'external'].includes(tel.fileOpenMode) ? tel.fileOpenMode : 'sidebar';
+    const fileModeDesc = fileMode === 'finder'
+      ? (zh ? '在 Finder 中定位选中' : 'Reveal file in Finder')
+      : (fileMode === 'external'
+        ? (zh ? '用默认软件打开（按住 ⌘ 仍用侧边栏）' : 'Open in default app (⌘-click for sidebar)')
+        : (zh ? '在右侧边栏内预览' : 'Preview in right sidebar'));
 
     const vibSectionHtml = vib ? `
       <div class="sec">
-        <div class="sec-title">${zh ? '毛玻璃效果 (Vibrancy)' : 'Native Vibrancy'}</div>
+        <div class="sec-title">${zh ? '毛玻璃' : 'Vibrancy'}</div>
         <div class="row">
-          <span>${zh ? '开启 macOS 原生毛玻璃' : 'Enable Native Vibrancy'}</span>
+          <span>${zh ? '开启毛玻璃' : 'Enable Vibrancy'}</span>
           <label class="switch">
             <input type="checkbox" id="chk-vib-enabled" ${vib.enabled ? 'checked' : ''} />
             <span class="slider"></span>
@@ -929,13 +1648,102 @@
         </div>
         <div class="sub-block ${vib.enabled ? '' : 'dim'}">
           <div class="sub-lbl row-inline">
-            <span>${zh ? '背景遮罩不透明度' : 'Tint Opacity'}</span>
+            <span>${zh ? '不透明度' : 'Opacity'}</span>
             <span class="mono" id="lbl-vib-op">${opacityPct}%</span>
           </div>
           <input type="range" id="rng-vib-op" min="20" max="85" step="5" value="${opacityPct}" />
         </div>
       </div>
     ` : '';
+
+    const generalTabHtml = `
+      <div class="sec">
+        <div class="sec-title">${zh ? '界面语言' : 'Language'}</div>
+        <div class="seg">
+          <button type="button" class="seg-btn ${loc === 'zh-CN' ? 'active' : ''}" data-locale="zh-CN">简体中文</button>
+          <button type="button" class="seg-btn ${loc === 'en' ? 'active' : ''}" data-locale="en">English</button>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <span>${zh ? '右下角设置图标' : 'Floating Settings Icon'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-show-float" ${showFloat ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      ${vibSectionHtml}
+
+      <div class="sec">
+        <div class="sec-title">${zh ? '状态监控' : 'Telemetry'}</div>
+        <div class="row">
+          <span>${zh ? '底栏状态条' : 'Composer Bar'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-tel-bar" ${tel.showComposerBar !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <span>${zh ? '回答末尾汇总' : 'Turn Summary'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-tel-turn" ${tel.showTurnFooter !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <span>${zh ? '首页用量看板' : 'Home Usage Card'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-tel-home" ${tel.showHomeDashboard !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row ${tel.showHomeDashboard === false ? 'dim' : ''}">
+          <span>${zh ? '合并双版本用量' : 'Merge Stable & Insiders'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-tel-merge" ${tel.mergeVariantUsage === true ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <button type="button" class="action-btn" id="btn-tel-refresh">${zh ? '刷新数据' : 'Refresh Data'}</button>
+      </div>
+    `;
+
+    const experienceTabHtml = `
+      <div class="sec">
+        <div class="sec-title">${zh ? '点击文件链接' : 'File Link Action'}</div>
+        <div class="seg seg-3">
+          <button type="button" class="seg-btn ${fileMode === 'sidebar' ? 'active' : ''}" data-file-mode="sidebar">${zh ? '侧边栏' : 'Sidebar'}</button>
+          <button type="button" class="seg-btn ${fileMode === 'finder' ? 'active' : ''}" data-file-mode="finder">Finder</button>
+          <button type="button" class="seg-btn ${fileMode === 'external' ? 'active' : ''}" data-file-mode="external">${zh ? '默认应用' : 'Default App'}</button>
+        </div>
+        <div class="mode-desc">${fileModeDesc}</div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">${zh ? '阅读与动效' : 'Reading & Motion'}</div>
+        <div class="row">
+          <span>${zh ? '代码块吸顶与折叠' : 'Sticky & Fold Code Blocks'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-code-enh" ${tel.codeBlockEnhance !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <span>${zh ? '吐字淡入动效' : 'Streaming Fade-in'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-stream-fade" ${tel.streamFadeIn !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <span>${zh ? '平滑光标' : 'Smooth Caret'}</span>
+          <label class="switch">
+            <input type="checkbox" id="chk-smooth-caret" ${tel.smoothCaret !== false ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    `;
 
     settingsPanelEl.innerHTML = `
       <div class="panel ${dark ? 'dark' : 'light'}" style="--agy-accent:${accent};">
@@ -947,41 +1755,12 @@
           <button type="button" class="close-btn" id="btn-close" aria-label="Close">✕</button>
         </div>
 
-        <div class="sec">
-          <div class="sec-title">${zh ? '界面汉化 (Language)' : 'Localization (Language)'}</div>
-          <div class="seg">
-            <button type="button" class="seg-btn ${loc === 'zh-CN' ? 'active' : ''}" data-locale="zh-CN">简体中文</button>
-            <button type="button" class="seg-btn ${loc === 'en' ? 'active' : ''}" data-locale="en">English</button>
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <span>${zh ? '显示右下角浮动设置图标' : 'Show Floating Settings Icon'}</span>
-            <label class="switch">
-              <input type="checkbox" id="chk-show-float" ${showFloat ? 'checked' : ''} />
-              <span class="slider"></span>
-            </label>
-          </div>
+        <div class="nav-tabs" role="tablist">
+          <button type="button" role="tab" class="nav-tab ${settingsTab === 'general' ? 'active' : ''}" data-stab="general">${zh ? '常规' : 'General'}</button>
+          <button type="button" role="tab" class="nav-tab ${settingsTab === 'experience' ? 'active' : ''}" data-stab="experience">${zh ? '体验' : 'Experience'}</button>
         </div>
 
-        ${vibSectionHtml}
-
-        <div class="sec">
-          <div class="sec-title">${zh ? '状态监控 (Telemetry)' : 'Telemetry'}</div>
-          <div class="row">
-            <span>${zh ? '输入框底部状态条（上下文·额度·速度）' : 'Composer Bar (Context · Quota · Speed)'}</span>
-            <label class="switch">
-              <input type="checkbox" id="chk-tel-bar" ${tel.showComposerBar ? 'checked' : ''} />
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <span>${zh ? '回答末尾显示「本轮汇总」' : 'Show Per-Turn Summary Footer'}</span>
-            <label class="switch">
-              <input type="checkbox" id="chk-tel-turn" ${tel.showTurnFooter ? 'checked' : ''} />
-              <span class="slider"></span>
-            </label>
-          </div>
-          <button type="button" class="action-btn" id="btn-tel-refresh">${zh ? '立即刷新额度与本会话数据' : 'Refresh Quota & Session Now'}</button>
-        </div>
+        ${settingsTab === 'experience' ? experienceTabHtml : generalTabHtml}
       </div>
     `;
 
@@ -989,6 +1768,14 @@
     settingsPanelEl.querySelector('#btn-close')?.addEventListener('click', (e) => {
       e.stopPropagation();
       closeSettingsModal();
+    });
+
+    settingsPanelEl.querySelectorAll('[data-stab]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settingsTab = b.getAttribute('data-stab') === 'experience' ? 'experience' : 'general';
+        renderSettingsPanel();
+      });
     });
 
     settingsPanelEl.querySelectorAll('[data-locale]').forEach((b) => {
@@ -1043,15 +1830,58 @@
       }
     });
 
+    settingsPanelEl.querySelector('#chk-tel-home')?.addEventListener('change', (e) => {
+      if (api?.setTelemetry) {
+        api.setTelemetry({ showHomeDashboard: Boolean(e.target.checked) }).then((s) => { if (s) applySettings(s); }).catch(() => {});
+      }
+    });
+
+    settingsPanelEl.querySelector('#chk-tel-merge')?.addEventListener('change', (e) => {
+      if (api?.setTelemetry) {
+        api.setTelemetry({ mergeVariantUsage: Boolean(e.target.checked) }).then((s) => {
+          if (s) applySettings(s);
+          void refreshUsageSummary(true);
+        }).catch(() => {});
+      }
+    });
+
+    settingsPanelEl.querySelectorAll('[data-file-mode]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const mode = b.getAttribute('data-file-mode');
+        if (api?.setTelemetry) {
+          api.setTelemetry({ fileOpenMode: mode }).then((s) => { if (s) applySettings(s); }).catch(() => {});
+        }
+      });
+    });
+
+    settingsPanelEl.querySelector('#chk-code-enh')?.addEventListener('change', (e) => {
+      if (api?.setTelemetry) {
+        api.setTelemetry({ codeBlockEnhance: Boolean(e.target.checked) }).then((s) => { if (s) applySettings(s); }).catch(() => {});
+      }
+    });
+
+    settingsPanelEl.querySelector('#chk-stream-fade')?.addEventListener('change', (e) => {
+      if (api?.setTelemetry) {
+        api.setTelemetry({ streamFadeIn: Boolean(e.target.checked) }).then((s) => { if (s) applySettings(s); }).catch(() => {});
+      }
+    });
+
+    settingsPanelEl.querySelector('#chk-smooth-caret')?.addEventListener('change', (e) => {
+      if (api?.setTelemetry) {
+        api.setTelemetry({ smoothCaret: Boolean(e.target.checked) }).then((s) => { if (s) applySettings(s); }).catch(() => {});
+      }
+    });
+
     const btnRef = settingsPanelEl.querySelector('#btn-tel-refresh');
     if (btnRef) {
       btnRef.addEventListener('click', async (e) => {
         e.stopPropagation();
         btnRef.textContent = zh ? '刷新中…' : 'Refreshing…';
-        await pollSnapshot(true);
+        await Promise.allSettled([pollSnapshot(true), refreshUsageSummary(true)]);
         btnRef.textContent = zh ? '✓ 已更新' : '✓ Updated';
         setTimeout(() => {
-          if (btnRef.isConnected) btnRef.textContent = zh ? '立即刷新额度与本会话数据' : 'Refresh Quota & Session Now';
+          if (btnRef.isConnected) btnRef.textContent = zh ? '刷新数据' : 'Refresh Data';
         }, 1200);
       });
     }
@@ -1206,11 +2036,47 @@
       .sec:first-of-type { padding-top: 0; margin-top: 0; border-top: none; }
       .sec-title {
         font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
+        font-weight: 600;
+        letter-spacing: 0.01em;
         opacity: 0.62;
         margin-bottom: 8px;
+      }
+      .nav-tabs {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        border-bottom: 1px solid rgba(128, 128, 138, 0.18);
+        margin: -2px 0 12px;
+      }
+      .nav-tab {
+        appearance: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 2px 7px;
+        cursor: pointer;
+        opacity: 0.52;
+        transition: opacity 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+      }
+      .nav-tab:hover { opacity: 0.85; }
+      .nav-tab.active {
+        opacity: 1;
+        color: var(--agy-accent, #3b82f6);
+        border-bottom-color: var(--agy-accent, #3b82f6);
+      }
+      .seg-3 {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .mode-desc {
+        font-size: 11px;
+        opacity: 0.6;
+        margin-top: 6px;
+        line-height: 1.4;
       }
       .row {
         display: flex;
@@ -1446,9 +2312,13 @@
       i18n: { ...(settings.i18n || {}), ...(next.i18n || {}) },
       telemetry: { ...(settings.telemetry || {}), ...(next.telemetry || {}) },
     };
+    if (window.__AGY_ENHANCEMENTS__?.applySettings) {
+      window.__AGY_ENHANCEMENTS__.applySettings(settings);
+    }
     updateSettingsButtonAppearance();
     renderComposerBar();
     renderTurnFooters();
+    renderHomeDashboard();
   }
 
   async function pollSnapshot(forceQuota = false) {
@@ -1463,6 +2333,10 @@
       snapshot = { ...snapshot, session: null };
       renderComposerBar();
       renderTurnFooters();
+      renderHomeDashboard();
+      if (!routeId && settings?.telemetry?.showHomeDashboard !== false) {
+        void refreshUsageSummary(false);
+      }
     }
 
     const mySeq = ++fetchSeq;
@@ -1476,6 +2350,7 @@
         };
         renderComposerBar();
         renderTurnFooters();
+        renderHomeDashboard();
       }
     } catch (_e) {}
   }
@@ -1505,6 +2380,7 @@
       } else {
         renderComposerBar();
         renderTurnFooters();
+        renderHomeDashboard();
       }
     }, 180);
   }
@@ -1530,7 +2406,7 @@
     domObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
         const t = m.target;
-        if (t && t.nodeType === 1 && (t.closest?.('#agy-settings-host, #agy-telemetry-bar-host, #agy-telemetry-popover-host, .agy-turn-footer'))) {
+        if (t && t.nodeType === 1 && (t.closest?.('#agy-settings-host, #agy-telemetry-bar-host, #agy-telemetry-popover-host, #agy-home-dashboard-host, #agy-smooth-caret, .agy-turn-footer, .agy-code-fold-btn, .agy-code-fold-bar'))) {
           continue;
         }
         scheduleDomSync();
@@ -1542,6 +2418,7 @@
     const themeObs = new MutationObserver(() => {
       updateSettingsButtonAppearance();
       renderComposerBar();
+      renderHomeDashboard();
       if (popoverOpen) renderTelemetryPopover();
     });
     themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
@@ -1597,6 +2474,7 @@
       startDomObserver();
       renderComposerBar();
       renderTurnFooters();
+      renderHomeDashboard();
       void pollSnapshot(true).then(() => schedulePoll());
     };
 

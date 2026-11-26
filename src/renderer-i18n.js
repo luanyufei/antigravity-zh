@@ -38,7 +38,12 @@
     '[data-ag-modal-top-layer]',
     '#agy-settings-host',
     '#agy-telemetry-bar-host',
+    '#agy-telemetry-popover-host',
+    '#agy-home-dashboard-host',
+    '#agy-smooth-caret',
     '.agy-turn-footer',
+    '.agy-code-fold-btn',
+    '.agy-code-fold-bar',
     '[data-agy-telemetry-ignore]',
   ].join(',');
 

@@ -27,31 +27,54 @@ module.exports = function initTelemetryPlugin(api) {
   const PLUGIN_DIR = path.join(api.I18N_DIR, 'local-plugins');
   const ASSETS_DIR = path.join(PLUGIN_DIR, 'telemetry-assets');
   const PRELOAD_PATH = path.join(ASSETS_DIR, 'preload.js');
+  const ENHANCEMENTS_PATH = path.join(ASSETS_DIR, 'enhancements.js');
   const OVERLAY_PATH = path.join(ASSETS_DIR, 'overlay.js');
   const VARIANT = (api.appInfo && api.appInfo.variant) || (/insider/i.test(process.execPath || '') ? 'insiders' : 'stable');
   const APP_NAME = (api.appInfo && api.appInfo.appName) || (VARIANT === 'insiders' ? 'Antigravity - Insiders' : 'Antigravity');
   const CFG_FILENAME = `telemetry-${VARIANT}.json`;
   const CFG_PATH = path.join(PLUGIN_DIR, CFG_FILENAME);
-  const DAEMON_DIR = path.join(
+  const OTHER_VARIANT = VARIANT === 'insiders' ? 'stable' : 'insiders';
+  const ROLLUP_CACHE_PATH = path.join(PLUGIN_DIR, `telemetry-rollup-${VARIANT}.json`);
+  const OTHER_ROLLUP_CACHE_PATH = path.join(PLUGIN_DIR, `telemetry-rollup-${OTHER_VARIANT}.json`);
+  const VARIANT_DATA_DIR = path.join(
     os.homedir(),
     '.gemini',
-    VARIANT === 'insiders' ? 'antigravity-insiders' : 'antigravity',
-    'daemon'
+    VARIANT === 'insiders' ? 'antigravity-insiders' : 'antigravity'
   );
+  const OTHER_VARIANT_DATA_DIR = path.join(
+    os.homedir(),
+    '.gemini',
+    OTHER_VARIANT === 'insiders' ? 'antigravity-insiders' : 'antigravity'
+  );
+  const DAEMON_DIR = path.join(VARIANT_DATA_DIR, 'daemon');
+  const CONVERSATIONS_DIR = path.join(VARIANT_DATA_DIR, 'conversations');
 
   const DEFAULT_CFG = {
     showComposerBar: true,
     showTurnFooter: true,
-    quotaWindow: 'auto', // 'auto' | '5h' | 'weekly' | 'both'
+    showHomeDashboard: true,
+    mergeVariantUsage: false,
+    fileOpenMode: 'sidebar', // 'sidebar' | 'finder' | 'external'
+    codeBlockEnhance: true,
+    streamFadeIn: true,
+    smoothCaret: true,
+    quotaWindow: 'both',
   };
 
   function loadCfg() {
     try {
       const raw = JSON.parse(fs.readFileSync(CFG_PATH, 'utf8'));
-      const qw = ['auto', '5h', 'weekly', 'both'].includes(raw.quotaWindow) ? raw.quotaWindow : 'auto';
+      const qw = ['auto', '5h', 'weekly', 'both'].includes(raw.quotaWindow) ? raw.quotaWindow : 'both';
+      const fom = ['sidebar', 'finder', 'external'].includes(raw.fileOpenMode) ? raw.fileOpenMode : 'sidebar';
       return {
         showComposerBar: raw.showComposerBar !== false,
         showTurnFooter: raw.showTurnFooter !== false,
+        showHomeDashboard: raw.showHomeDashboard !== false,
+        mergeVariantUsage: raw.mergeVariantUsage === true,
+        fileOpenMode: fom,
+        codeBlockEnhance: raw.codeBlockEnhance !== false,
+        streamFadeIn: raw.streamFadeIn !== false,
+        smoothCaret: raw.smoothCaret !== false,
         quotaWindow: qw,
       };
     } catch (_e) {
@@ -495,13 +518,650 @@ module.exports = function initTelemetryPlugin(api) {
     const next = { ...cfg };
     if (typeof patch?.showComposerBar === 'boolean') next.showComposerBar = patch.showComposerBar;
     if (typeof patch?.showTurnFooter === 'boolean') next.showTurnFooter = patch.showTurnFooter;
+    if (typeof patch?.showHomeDashboard === 'boolean') next.showHomeDashboard = patch.showHomeDashboard;
+    if (typeof patch?.mergeVariantUsage === 'boolean') {
+      if (next.mergeVariantUsage !== patch.mergeVariantUsage) {
+        usageSummaryCache = null;
+      }
+      next.mergeVariantUsage = patch.mergeVariantUsage;
+    }
+    if (['sidebar', 'finder', 'external'].includes(patch?.fileOpenMode)) next.fileOpenMode = patch.fileOpenMode;
+    if (typeof patch?.codeBlockEnhance === 'boolean') next.codeBlockEnhance = patch.codeBlockEnhance;
+    if (typeof patch?.streamFadeIn === 'boolean') next.streamFadeIn = patch.streamFadeIn;
+    if (typeof patch?.smoothCaret === 'boolean') next.smoothCaret = patch.smoothCaret;
     if (['auto', '5h', 'weekly', 'both'].includes(patch?.quotaWindow)) next.quotaWindow = patch.quotaWindow;
     cfg = next;
     saveCfg(cfg);
     api.syncAllNativeMenus();
     broadcastSettings();
-    api.log(`[telemetry] Updated: composerBar=${cfg.showComposerBar}, turnFooter=${cfg.showTurnFooter}, quotaWindow=${cfg.quotaWindow}`);
+    api.log(`[telemetry] Updated: bar=${cfg.showComposerBar}, turn=${cfg.showTurnFooter}, home=${cfg.showHomeDashboard}, merge=${cfg.mergeVariantUsage}, fileOpen=${cfg.fileOpenMode}, code=${cfg.codeBlockEnhance}, fade=${cfg.streamFadeIn}, caret=${cfg.smoothCaret}`);
     return { ...cfg };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Safe Local File Opener (Finder / System Default App)
+  // ---------------------------------------------------------------------------
+  const EXEC_BLOCK_EXTS = new Set([
+    '.app', '.command', '.sh', '.zsh', '.bash', '.csh', '.fish',
+    '.pkg', '.mpkg', '.dmg', '.scpt', '.applescript', '.workflow', '.action',
+    '.exe', '.bat', '.cmd', '.msi', '.jar',
+  ]);
+
+  function resolveLocalFilePath(rawInput) {
+    if (!rawInput || typeof rawInput !== 'string') return null;
+    let s = rawInput.trim();
+    if (!s) return null;
+    if (/^file:\/\//i.test(s)) {
+      try {
+        const u = new URL(s);
+        if (u.protocol !== 'file:') return null;
+        s = decodeURIComponent(u.pathname || '');
+      } catch (_e) {
+        s = s.replace(/^file:\/\//i, '');
+        try { s = decodeURIComponent(s); } catch (_e2) {}
+      }
+    }
+    // Strip hash/query/line suffixes (e.g. #L10-L20 or :12:4)
+    s = s.split('#')[0].split('?')[0];
+    s = s.replace(/:(\d+)(?::\d+)?$/, '');
+    if (!s.startsWith('/')) return null;
+    const normalized = path.normalize(s);
+    if (!normalized.startsWith('/')) return null;
+    try {
+      if (!fs.existsSync(normalized)) return null;
+      return normalized;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  async function handleOpenLocalFile(opts) {
+    const mode = opts?.mode === 'external' ? 'external' : 'finder';
+    const resolved = resolveLocalFilePath(opts?.targetPath);
+    if (!resolved) return { ok: false, reason: 'not-found' };
+    try {
+      if (mode === 'finder') {
+        electron.shell.showItemInFolder(resolved);
+        return { ok: true, mode: 'finder', path: resolved };
+      }
+      const stat = fs.statSync(resolved);
+      const ext = path.extname(resolved).toLowerCase();
+      if (stat.isDirectory() || EXEC_BLOCK_EXTS.has(ext)) {
+        electron.shell.showItemInFolder(resolved);
+        return { ok: true, mode: 'finder-safe', path: resolved };
+      }
+      const errMsg = await electron.shell.openPath(resolved);
+      if (errMsg) return { ok: false, error: errMsg };
+      return { ok: true, mode: 'external', path: resolved };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cross-Session Historical Usage Rollup (Variant-Isolated & Disk-Cached)
+  // ---------------------------------------------------------------------------
+  let rollupDiskCache = null;
+  let usageSummaryCache = null; // { at, origin, data, promise }
+
+  function loadRollupDiskCacheAt(filePath) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (parsed && (parsed.version === 4 || parsed.version === 3) && parsed.items && typeof parsed.items === 'object') {
+        parsed.version = 4;
+        return parsed;
+      }
+    } catch (_e) {}
+    return { version: 4, items: {} };
+  }
+
+  function loadRollupDiskCache() {
+    if (rollupDiskCache) return rollupDiskCache;
+    rollupDiskCache = loadRollupDiskCacheAt(ROLLUP_CACHE_PATH);
+    return rollupDiskCache;
+  }
+
+  function saveRollupDiskCacheAt(filePath, cacheObj) {
+    try {
+      const tmp = `${filePath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(cacheObj), 'utf8');
+      fs.renameSync(tmp, filePath);
+    } catch (_e) {}
+  }
+
+  function saveRollupDiskCache(cacheObj) {
+    saveRollupDiskCacheAt(ROLLUP_CACHE_PATH, cacheObj);
+  }
+
+  function localDateKey(ms) {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function listRecentConversationFilesInDir(dirPath, maxAgeDays = 190, maxCount = 400) {
+    const results = [];
+    const cutoffMs = Date.now() - maxAgeDays * 86400 * 1000;
+    try {
+      if (!fs.existsSync(dirPath)) return results;
+      const entries = fs.readdirSync(dirPath);
+      for (const name of entries) {
+        if (!name.endsWith('.db')) continue;
+        const id = name.slice(0, -3);
+        if (!UUID_RE.test(id)) continue;
+        const dbPath = path.join(dirPath, name);
+        let birthMs = 0;
+        let cacheStampMs = 0;
+        try {
+          const st = fs.statSync(dbPath);
+          // birthtimeMs is immutable on macOS APFS even when SQLite touches/checkpoints the .db file
+          birthMs = (st.birthtimeMs && st.birthtimeMs > 946684800000) ? st.birthtimeMs : (st.mtimeMs || 0);
+          cacheStampMs = st.mtimeMs || birthMs;
+          const walPath = `${dbPath}-wal`;
+          if (fs.existsSync(walPath)) {
+            const walM = fs.statSync(walPath).mtimeMs || 0;
+            if (walM > cacheStampMs) cacheStampMs = walM;
+          }
+        } catch (_e) {
+          continue;
+        }
+        if (cacheStampMs >= cutoffMs) {
+          results.push({ id, mtimeMs: Math.floor(cacheStampMs), dbMtimeMs: Math.floor(birthMs) });
+        }
+      }
+    } catch (_e) {}
+    results.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return results.slice(0, maxCount);
+  }
+
+  function listRecentConversationFiles(maxAgeDays = 190, maxCount = 400) {
+    return listRecentConversationFilesInDir(CONVERSATIONS_DIR, maxAgeDays, maxCount);
+  }
+
+  function callExplicitHubRpc(origin, token, method, body = {}, timeoutMs = 8000) {
+    const url = `${origin}/exa.language_server_pb.LanguageServerService/${method}`;
+    const isHttps = url.startsWith('https:');
+    const payload = JSON.stringify(body || {});
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? https : http).request(
+        url,
+        {
+          agent: isHttps ? httpsAgent : httpAgent,
+          rejectUnauthorized: false,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(payload)),
+            'Connect-Protocol-Version': '1',
+            'x-codeium-csrf-token': token,
+          },
+        },
+        (res) => {
+          const chunks = [];
+          let total = 0;
+          res.on('data', (chunk) => {
+            total += chunk.length;
+            if (total > 32 * 1024 * 1024) { req.destroy(new Error('limit')); return; }
+            chunks.push(chunk);
+          });
+          res.on('end', () => {
+            if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+            try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+            catch (e) { reject(e); }
+          });
+        }
+      );
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
+      req.end(payload);
+    });
+  }
+
+  async function tryRefreshOtherVariantRollup() {
+    const otherDaemonDir = path.join(OTHER_VARIANT_DATA_DIR, 'daemon');
+    const otherConvDir = path.join(OTHER_VARIANT_DATA_DIR, 'conversations');
+    const otherDisk = loadRollupDiskCacheAt(OTHER_ROLLUP_CACHE_PATH);
+    const otherFiles = listRecentConversationFilesInDir(otherConvDir, 190, 400);
+    if (otherFiles.length === 0) {
+      return { items: [], otherVariantMissing: false };
+    }
+
+    // If the other variant happens to have a live hub running right now, incrementally refresh its rollup cache too!
+    const stale = otherFiles.filter((f) => {
+      const cached = otherDisk.items[f.id];
+      return !cached || cached.mtimeMs !== f.mtimeMs;
+    });
+    if (stale.length > 0 && fs.existsSync(otherDaemonDir)) {
+      try {
+        const hubFiles = fs.readdirSync(otherDaemonDir)
+          .filter((f) => f.startsWith('hub_') && f.endsWith('.json'))
+          .map((f) => ({ p: path.join(otherDaemonDir, f), m: fs.statSync(path.join(otherDaemonDir, f)).mtimeMs }))
+          .sort((a, b) => b.m - a.m);
+        let liveHub = null;
+        for (const hf of hubFiles.slice(0, 4)) {
+          try {
+            const d = JSON.parse(fs.readFileSync(hf.p, 'utf8'));
+            if (!d?.httpsPort || !d?.csrfToken) continue;
+            const orig = `https://127.0.0.1:${d.httpsPort}`;
+            await callExplicitHubRpc(orig, d.csrfToken, 'GetAvailableModels', { forceRefresh: false }, 1500);
+            liveHub = { origin: orig, token: d.csrfToken };
+            break;
+          } catch (_e) {}
+        }
+        if (liveHub) {
+          let dirty = false;
+          let idx = 0;
+          async function w() {
+            while (idx < stale.length) {
+              const item = stale[idx++];
+              try {
+                const gRes = await callExplicitHubRpc(
+                  liveHub.origin,
+                  liveHub.token,
+                  'GetCascadeTrajectoryGeneratorMetadata',
+                  { cascadeId: item.id, includeMessages: false },
+                  6000
+                );
+                const rawGens = Array.isArray(gRes?.generatorMetadata) ? gRes.generatorMetadata : [];
+                otherDisk.items[item.id] = summarizeGeneratorListForRollup(rawGens, item.mtimeMs, item.dbMtimeMs);
+                dirty = true;
+              } catch (_e) {}
+            }
+          }
+          const ws = [];
+          for (let i = 0; i < Math.min(5, stale.length); i++) ws.push(w());
+          await Promise.all(ws);
+          if (dirty) saveRollupDiskCacheAt(OTHER_ROLLUP_CACHE_PATH, otherDisk);
+        }
+      } catch (_e) {}
+    }
+
+    const items = otherFiles.map((f) => ({ id: f.id, rec: otherDisk.items[f.id] })).filter((x) => x.rec);
+    const otherVariantMissing = items.length === 0 && otherFiles.length > 0;
+    return { items, otherVariantMissing };
+  }
+
+  function summarizeGeneratorListForRollup(rawGens, cacheStampMs, fallbackDateMs) {
+    let totalInput = 0;
+    let cacheRead = 0;
+    let totalOutput = 0;
+    let calls = 0;
+    let latestCallMs = 0;
+    const byModel = {};
+    const byDay = {}; // dateKey -> { input, cache, output, calls, byModel }
+    const fallbackDk = localDateKey(fallbackDateMs || cacheStampMs);
+
+    for (let i = 0; i < rawGens.length; i++) {
+      const c = metrics.normalizeGeneratorEntry(rawGens[i], i);
+      if (!c || (c.totalInput === 0 && c.outputTokens === 0)) continue;
+      totalInput += c.totalInput;
+      cacheRead += c.cacheReadTokens;
+      totalOutput += c.outputTokens;
+      calls += 1;
+
+      const callMs = c.createdAtMs || fallbackDateMs || cacheStampMs;
+      if (callMs > latestCallMs) latestCallMs = callMs;
+      const dk = c.createdAtMs ? localDateKey(c.createdAtMs) : fallbackDk;
+
+      const mName = c.shortModelName || c.displayName || c.modelId || 'Unknown';
+      if (!byModel[mName]) byModel[mName] = { input: 0, cache: 0, output: 0, calls: 0 };
+      byModel[mName].input += c.totalInput;
+      byModel[mName].cache += c.cacheReadTokens;
+      byModel[mName].output += c.outputTokens;
+      byModel[mName].calls += 1;
+
+      if (!byDay[dk]) byDay[dk] = { input: 0, cache: 0, output: 0, calls: 0, byModel: {} };
+      const dObj = byDay[dk];
+      dObj.input += c.totalInput;
+      dObj.cache += c.cacheReadTokens;
+      dObj.output += c.outputTokens;
+      dObj.calls += 1;
+      if (!dObj.byModel[mName]) dObj.byModel[mName] = { input: 0, cache: 0, output: 0, calls: 0 };
+      dObj.byModel[mName].input += c.totalInput;
+      dObj.byModel[mName].cache += c.cacheReadTokens;
+      dObj.byModel[mName].output += c.outputTokens;
+      dObj.byModel[mName].calls += 1;
+    }
+
+    const effectiveMs = latestCallMs || fallbackDateMs || cacheStampMs;
+    return {
+      mtimeMs: cacheStampMs,
+      effectiveMs,
+      dateKey: localDateKey(effectiveMs),
+      totalInput,
+      cacheRead,
+      totalOutput,
+      calls,
+      byModel,
+      byDay,
+    };
+  }
+
+  function finalizeDayBucket(b) {
+    const totalTokens = b.totalTokens || 0;
+    const models = Array.from(b._models.values())
+      .sort((a, b2) => b2.totalTokens - a.totalTokens)
+      .slice(0, 5)
+      .map((m) => ({
+        name: m.name,
+        totalTokens: m.totalTokens,
+        outputTokens: m.outputTokens,
+        calls: m.calls,
+        estUsd: Math.round(m.estUsd * 100) / 100,
+        sharePct: totalTokens > 0 ? Math.round((m.totalTokens / totalTokens) * 100) : 0,
+      }));
+    return {
+      dateKey: b.dateKey,
+      label: b.label,
+      totalTokens,
+      inputTokens: b.inputTokens,
+      cacheRead: b.cacheRead,
+      outputTokens: b.outputTokens,
+      cacheHitPct: b.inputTokens > 0 ? Math.round((b.cacheRead / b.inputTokens) * 100) : null,
+      conversations: b.conversations,
+      calls: b.calls,
+      estUsd: Math.round(b.estUsd * 100) / 100,
+      models,
+    };
+  }
+
+  function createDayBucket(dateKey, label) {
+    return {
+      dateKey,
+      label,
+      totalTokens: 0,
+      inputTokens: 0,
+      cacheRead: 0,
+      outputTokens: 0,
+      conversations: 0,
+      calls: 0,
+      estUsd: 0,
+      _models: new Map(),
+    };
+  }
+
+  function accumulateDayBucket(bucket, dObj) {
+    if (!bucket || !dObj) return 0;
+    const dIn = dObj.input || 0;
+    const dCache = dObj.cache || 0;
+    const dOut = dObj.output || 0;
+    const dCalls = dObj.calls || 0;
+    bucket.inputTokens += dIn;
+    bucket.cacheRead += dCache;
+    bucket.outputTokens += dOut;
+    bucket.totalTokens += dIn + dOut;
+    bucket.calls += dCalls;
+    bucket.conversations += 1;
+
+    let dUsd = 0;
+    for (const [rawModelName, mv] of Object.entries(dObj.byModel || {})) {
+      const mName = metrics.shortenModelName(rawModelName) || rawModelName;
+      const mIn = mv.input || 0;
+      const mCache = mv.cache || 0;
+      const mOut = mv.output || 0;
+      const mUsd = metrics.estimateModelCostUsd(mName, mIn, mCache, mOut);
+      dUsd += mUsd;
+      if (!bucket._models.has(mName)) {
+        bucket._models.set(mName, { name: mName, totalTokens: 0, outputTokens: 0, calls: 0, estUsd: 0 });
+      }
+      const cm = bucket._models.get(mName);
+      cm.totalTokens += mIn + mOut;
+      cm.outputTokens += mOut;
+      cm.calls += mv.calls || 0;
+      cm.estUsd += mUsd;
+    }
+    bucket.estUsd += dUsd;
+    return dUsd;
+  }
+
+  function buildRangeAggregate(items, daysBack) {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const isAll = !daysBack || daysBack <= 0;
+
+    const dayKeys = [];
+    const dayMap = new Map();
+    const spanDays = isAll ? 140 : daysBack;
+    for (let i = spanDays - 1; i >= 0; i--) {
+      const dMs = todayStart - i * 86400 * 1000;
+      const dk = localDateKey(dMs);
+      const dt = new Date(dMs);
+      const label = `${dt.getMonth() + 1}/${dt.getDate()}`;
+      dayKeys.push(dk);
+      dayMap.set(dk, createDayBucket(dk, label));
+    }
+    const minDayKey = isAll ? '' : dayKeys[0];
+
+    let totalInput = 0;
+    let cacheRead = 0;
+    let totalOutput = 0;
+    let totalEstUsd = 0;
+    let calls = 0;
+    let conversations = 0;
+    const modelTotals = new Map();
+
+    for (const rec of items) {
+      if (!rec || rec.calls <= 0) continue;
+      const dayEntries = rec.byDay && typeof rec.byDay === 'object'
+        ? Object.entries(rec.byDay)
+        : [[rec.dateKey, { input: rec.totalInput, cache: rec.cacheRead, output: rec.totalOutput, calls: rec.calls, byModel: rec.byModel }]];
+
+      let convMatched = false;
+      for (const [dk, dObj] of dayEntries) {
+        if (!dObj || dObj.calls <= 0) continue;
+        if (!isAll && dk < minDayKey) continue;
+        convMatched = true;
+        const dIn = dObj.input || 0;
+        const dCache = dObj.cache || 0;
+        const dOut = dObj.output || 0;
+        const dCalls = dObj.calls || 0;
+        totalInput += dIn;
+        cacheRead += dCache;
+        totalOutput += dOut;
+        calls += dCalls;
+
+        let dUsd = 0;
+        for (const [rawModelName, mv] of Object.entries(dObj.byModel || {})) {
+          const mName = metrics.shortenModelName(rawModelName) || rawModelName;
+          const mIn = mv.input || 0;
+          const mCache = mv.cache || 0;
+          const mOut = mv.output || 0;
+          const mUsd = metrics.estimateModelCostUsd(mName, mIn, mCache, mOut);
+          dUsd += mUsd;
+          if (!modelTotals.has(mName)) {
+            modelTotals.set(mName, { name: mName, inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, estUsd: 0 });
+          }
+          const cur = modelTotals.get(mName);
+          cur.inputTokens += mIn;
+          cur.outputTokens += mOut;
+          cur.totalTokens += mIn + mOut;
+          cur.calls += mv.calls || 0;
+          cur.estUsd += mUsd;
+        }
+        totalEstUsd += dUsd;
+
+        const bucket = dayMap.get(dk);
+        if (bucket) accumulateDayBucket(bucket, dObj);
+      }
+      if (convMatched) conversations += 1;
+    }
+
+    const totalTokens = totalInput + totalOutput;
+    const models = Array.from(modelTotals.values())
+      .sort((a, b) => b.totalTokens - a.totalTokens)
+      .slice(0, 6)
+      .map((m) => ({
+        ...m,
+        estUsd: Math.round(m.estUsd * 100) / 100,
+        sharePct: totalTokens > 0 ? Math.round((m.totalTokens / totalTokens) * 100) : 0,
+      }));
+
+    return {
+      days: isAll ? 0 : daysBack,
+      conversations,
+      calls,
+      totalInput,
+      cacheRead,
+      totalOutput,
+      totalTokens,
+      estUsd: Math.round(totalEstUsd * 100) / 100,
+      cacheHitPct: totalInput > 0 ? Math.round((cacheRead / totalInput) * 100) : null,
+      daily: dayKeys.map((dk) => finalizeDayBucket(dayMap.get(dk))),
+      models,
+    };
+  }
+
+  function buildHeatmapGrid(items, weeks = 20) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(today);
+    start.setDate(start.getDate() - (weeks * 7 - 1));
+    // Align start to Sunday so each column is a full Sun..Sat week
+    start.setDate(start.getDate() - start.getDay());
+
+    const byDate = new Map();
+    for (const rec of items) {
+      if (!rec || rec.calls <= 0) continue;
+      const dayEntries = rec.byDay && typeof rec.byDay === 'object'
+        ? Object.entries(rec.byDay)
+        : (rec.dateKey ? [[rec.dateKey, { input: rec.totalInput, cache: rec.cacheRead, output: rec.totalOutput, calls: rec.calls, byModel: rec.byModel }]] : []);
+
+      for (const [dk, dObj] of dayEntries) {
+        if (!dk || !dObj || dObj.calls <= 0) continue;
+        if (!byDate.has(dk)) byDate.set(dk, createDayBucket(dk, dk.slice(5).replace(/^0/, '').replace('-0', '/').replace('-', '/')));
+        accumulateDayBucket(byDate.get(dk), dObj);
+      }
+    }
+
+    const cells = [];
+    let peak = 0;
+    for (const cursor = new Date(start); cursor <= today; cursor.setDate(cursor.getDate() + 1)) {
+      const dk = localDateKey(cursor.getTime());
+      const lbl = `${cursor.getMonth() + 1}/${cursor.getDate()}`;
+      const raw = byDate.get(dk);
+      const finalized = raw ? finalizeDayBucket({ ...raw, label: lbl }) : finalizeDayBucket(createDayBucket(dk, lbl));
+      if (finalized.totalTokens > peak) peak = finalized.totalTokens;
+      cells.push({ ...finalized, level: 0 });
+    }
+    for (const c of cells) {
+      if (c.totalTokens > 0 && peak > 0) {
+        const sr = Math.sqrt(c.totalTokens / peak);
+        c.level = sr >= 0.72 ? 4 : sr >= 0.48 ? 3 : sr >= 0.25 ? 2 : 1;
+      }
+    }
+    return { weeks, cells, peak };
+  }
+
+  async function fetchUsageSummary(origin, force = false) {
+    const now = Date.now();
+    if (!force && usageSummaryCache && usageSummaryCache.origin === origin && usageSummaryCache.data && (now - usageSummaryCache.at) < 25000) {
+      return usageSummaryCache.data;
+    }
+    if (usageSummaryCache && usageSummaryCache.promise && !force) {
+      return usageSummaryCache.promise;
+    }
+
+    const promise = (async () => {
+      const disk = loadRollupDiskCache();
+      const recent = listRecentConversationFiles(190, 400);
+      const stale = recent.filter((f) => {
+        const cached = disk.items[f.id];
+        return !cached || cached.mtimeMs !== f.mtimeMs;
+      });
+
+      let dirty = false;
+      const CONCURRENCY = 5;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < stale.length) {
+          const item = stale[cursor++];
+          try {
+            const gRes = await callLsRpc(
+              origin,
+              'GetCascadeTrajectoryGeneratorMetadata',
+              { cascadeId: item.id, includeMessages: false },
+              8000
+            );
+            const rawGens = Array.isArray(gRes?.generatorMetadata) ? gRes.generatorMetadata : [];
+            disk.items[item.id] = summarizeGeneratorListForRollup(rawGens, item.mtimeMs, item.dbMtimeMs);
+            dirty = true;
+          } catch (_e) {
+            // Skip unreadable/unindexed trajectory gracefully
+          }
+        }
+      }
+
+      if (stale.length > 0) {
+        const workers = [];
+        for (let i = 0; i < Math.min(CONCURRENCY, stale.length); i++) workers.push(worker());
+        await Promise.all(workers);
+      }
+
+      // Prune entries older than 210 days to keep rollup cache bounded
+      const pruneCutoff = Date.now() - 210 * 86400 * 1000;
+      for (const [k, v] of Object.entries(disk.items)) {
+        if (!v || (v.mtimeMs || 0) < pruneCutoff) {
+          delete disk.items[k];
+          dirty = true;
+        }
+      }
+      if (dirty) saveRollupDiskCache(disk);
+
+      const mergedById = new Map();
+      for (const f of recent) {
+        if (disk.items[f.id]) mergedById.set(f.id, disk.items[f.id]);
+      }
+
+      let merged = false;
+      let otherVariantMissing = false;
+      if (cfg.mergeVariantUsage === true) {
+        const otherRes = await tryRefreshOtherVariantRollup();
+        otherVariantMissing = otherRes.otherVariantMissing;
+        for (const { id, rec } of otherRes.items) {
+          const existing = mergedById.get(id);
+          if (!existing || (rec.mtimeMs || 0) > (existing.mtimeMs || 0)) {
+            mergedById.set(id, rec);
+          }
+        }
+        merged = otherRes.items.length > 0;
+      }
+
+      const combinedItems = Array.from(mergedById.values());
+
+      const data = {
+        ok: true,
+        variant: VARIANT,
+        merged,
+        mergeEnabled: cfg.mergeVariantUsage === true,
+        otherVariantMissing,
+        scannedCount: combinedItems.length,
+        updatedAtMs: Date.now(),
+        heatmap: buildHeatmapGrid(combinedItems, 20),
+        ranges: {
+          all: buildRangeAggregate(combinedItems, 0),
+          today: buildRangeAggregate(combinedItems, 1),
+          '7d': buildRangeAggregate(combinedItems, 7),
+          '30d': buildRangeAggregate(combinedItems, 30),
+        },
+      };
+      usageSummaryCache = { at: Date.now(), origin, data, promise: null };
+      return data;
+    })();
+
+    usageSummaryCache = {
+      at: usageSummaryCache?.at || 0,
+      origin,
+      data: usageSummaryCache?.data || null,
+      promise,
+    };
+    try {
+      return await promise;
+    } catch (err) {
+      if (usageSummaryCache) usageSummaryCache.promise = null;
+      return { ok: false, error: err?.message || String(err) };
+    }
   }
 
   // Keep Settings modal synced if Vibrancy changes via macOS Menu Bar or ⌘⌥T
@@ -533,6 +1193,18 @@ module.exports = function initTelemetryPlugin(api) {
       if (!origin) return { ok: false, error: 'Forbidden origin' };
       const res = await fetchQuotaAndCatalog(origin, opts?.force === true);
       return { ok: Boolean(res?.quota?.ok), quota: res?.quota || null };
+    });
+
+    reg('agy-telemetry:get-usage-summary', async (event, opts) => {
+      const origin = assertLocalMainFrameOrigin(event);
+      if (!origin) return { ok: false, error: 'Forbidden origin' };
+      return await fetchUsageSummary(origin, opts?.force === true);
+    });
+
+    reg('agy-telemetry:open-local-file', async (event, opts) => {
+      const origin = assertLocalMainFrameOrigin(event);
+      if (!origin) return { ok: false, error: 'Forbidden origin' };
+      return await handleOpenLocalFile(opts || {});
     });
 
     reg('agy-telemetry:get-snapshot', async (event, opts) => {
@@ -637,9 +1309,10 @@ module.exports = function initTelemetryPlugin(api) {
     if (!wc || wc.isDestroyed?.()) return;
     if (!fs.existsSync(OVERLAY_PATH)) return;
     try {
+      const enhScript = fs.existsSync(ENHANCEMENTS_PATH) ? fs.readFileSync(ENHANCEMENTS_PATH, 'utf8') : '';
       const script = fs.readFileSync(OVERLAY_PATH, 'utf8');
       const initSnap = JSON.stringify(getAllSettingsSnapshot());
-      const code = `${script}\n;try{window.__AGY_TELEMETRY_UI__&&window.__AGY_TELEMETRY_UI__.init(${initSnap});}catch(e){console.error('[agy-telemetry]',e);}`;
+      const code = `${enhScript}\n;${script}\n;try{window.__AGY_ENHANCEMENTS__&&window.__AGY_ENHANCEMENTS__.applySettings(${initSnap});window.__AGY_TELEMETRY_UI__&&window.__AGY_TELEMETRY_UI__.init(${initSnap});}catch(e){console.error('[agy-telemetry]',e);}`;
       wc.executeJavaScript(code, true).catch(() => {});
     } catch (err) {
       api.log('[telemetry] injectOverlay error', err);

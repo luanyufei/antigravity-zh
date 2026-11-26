@@ -48,6 +48,7 @@ cp "$REPO_DIR/src/local-plugins/vibrancy-assets/style.js" "$TARGET_DIR/local-plu
 cp "$REPO_DIR/src/local-plugins/telemetry.js" "$TARGET_DIR/local-plugins/telemetry.js"
 cp "$REPO_DIR/src/local-plugins/telemetry-assets/preload.js" "$TARGET_DIR/local-plugins/telemetry-assets/preload.js"
 cp "$REPO_DIR/src/local-plugins/telemetry-assets/metrics.js" "$TARGET_DIR/local-plugins/telemetry-assets/metrics.js"
+cp "$REPO_DIR/src/local-plugins/telemetry-assets/enhancements.js" "$TARGET_DIR/local-plugins/telemetry-assets/enhancements.js"
 cp "$REPO_DIR/src/local-plugins/telemetry-assets/overlay.js" "$TARGET_DIR/local-plugins/telemetry-assets/overlay.js"
 chmod +x "$TARGET_DIR/patcher.py"
 

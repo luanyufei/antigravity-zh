@@ -42,10 +42,30 @@ function normalizeModelKey(raw) {
 
 function shortenModelName(displayName) {
   if (!displayName || typeof displayName !== 'string') return '';
-  return displayName
+  let s = displayName
     .trim()
     .replace(/\s*\((?:Extra\s*High|XHigh|High|Medium|Low|Thinking|Minimal|Fast)\)\s*$/i, '')
     .trim();
+  // Canonicalize raw model IDs (e.g. "gemini-3.8-flash-n", "gemini-3.7-flash") into clean display names
+  const low = s.toLowerCase();
+  if (/^gemini[\s._-]*4[\s._-]*neon\b/.test(low)) return 'Gemini 4 Neon';
+  if (/^gemini[\s._-]*4[\s._-]*hydrogen\b/.test(low)) return 'Gemini 4 Hydrogen';
+  if (/^gemini[\s._-]*4[\s._-]*argon\b/.test(low)) return 'Gemini 4 Argon';
+  if (/^gemini[\s._-]*4[\s._-]*carbon\b/.test(low)) return 'Gemini 4 Carbon';
+  if (/^gemini[\s._-]*3\.8[\s._-]*flash\b/.test(low)) return 'Gemini 3.8 Flash';
+  if (/^gemini[\s._-]*3\.7[\s._-]*flash\b/.test(low)) return 'Gemini 3.7 Flash';
+  if (/^gemini[\s._-]*3\.6[\s._-]*flash\b/.test(low)) return 'Gemini 3.6 Flash';
+  if (/^gemini[\s._-]*3\.5[\s._-]*flash[\s._-]*lite\b/.test(low)) return 'Gemini 3.5 Flash Lite';
+  if (/^gemini[\s._-]*3\.1[\s._-]*pro\b/.test(low)) return 'Gemini 3.1 Pro';
+  if (/^gemini[\s._-]*3(?:\.0)?[\s._-]*pro\b/.test(low)) return 'Gemini 3 Pro';
+  if (/^gemini[\s._-]*2\.5[\s._-]*pro\b/.test(low)) return 'Gemini 2.5 Pro';
+  if (/^gemini[\s._-]*2\.5[\s._-]*flash\b/.test(low)) return 'Gemini 2.5 Flash';
+  if (/^gemini[\s._-]*pro(?:[\s._-]|$)/.test(low)) return 'Gemini Pro';
+  if (/^claude[\s._-]*opus[\s._-]*5[\s._-]*5\b/.test(low)) return 'Claude Opus 5.5';
+  if (/^claude[\s._-]*sonnet[\s._-]*5[\s._-]*5\b/.test(low)) return 'Claude Sonnet 5.5';
+  if (/^claude[\s._-]*opus[\s._-]*4[\s._-]*6\b/.test(low)) return 'Claude Opus 4.6';
+  if (/^claude[\s._-]*sonnet[\s._-]*4[\s._-]*6\b/.test(low)) return 'Claude Sonnet 4.6';
+  return s;
 }
 
 /**
@@ -244,6 +264,8 @@ function normalizeGeneratorEntry(entry, ordinal) {
   const hostMaxContextTokens = toSafeInt(cw.maxContextTokens) || null;
   const hostEstimatedTokensUsed = toSafeInt(cw.estimatedTokensUsed) || null;
   const checkpointIndex = Number.isInteger(Number(csm.checkpointIndex)) ? Number(csm.checkpointIndex) : -1;
+  const parsedCreatedAtMs = csm.createdAt ? Date.parse(csm.createdAt) : NaN;
+  const createdAtMs = Number.isFinite(parsedCreatedAtMs) && parsedCreatedAtMs > 0 ? parsedCreatedAtMs : null;
 
   return {
     ordinal,
@@ -266,6 +288,7 @@ function normalizeGeneratorEntry(entry, ordinal) {
     hostMaxContextTokens,
     hostEstimatedTokensUsed,
     checkpointIndex,
+    createdAtMs,
   };
 }
 
@@ -442,6 +465,49 @@ function computeSessionMetrics({ userInputIndices = [], checkpointSteps = [], ca
   return { context, session, turns };
 }
 
+/**
+ * Estimate equivalent Developer API USD value from official public per-1M token rates.
+ * Strictly separates uncached input, cached input reads (90-95% discount), and output tokens.
+ */
+const API_PRICING_RULES = [
+  { re: /gemini[\s._-]*4[\s._-]*neon/i, inRate: 3.00, cacheRate: 0.15, outRate: 15.00 },
+  { re: /gemini[\s._-]*4[\s._-]*hydrogen/i, inRate: 1.50, cacheRate: 0.075, outRate: 7.50 },
+  { re: /gemini[\s._-]*4[\s._-]*(?:argon|carbon)/i, inRate: 2.00, cacheRate: 0.10, outRate: 10.00 },
+  { re: /gemini[\s._-]*3\.[678][\s._-]*flash/i, inRate: 0.75, cacheRate: 0.075, outRate: 3.75 },
+  { re: /gemini[\s._-]*3\.5[\s._-]*flash[\s._-]*lite|flash[\s._-]*lite/i, inRate: 0.30, cacheRate: 0.03, outRate: 2.50 },
+  { re: /gemini[\s._-]*3(?:\.\d+)?[\s._-]*pro/i, inRate: 2.00, cacheRate: 0.20, outRate: 12.00 },
+  { re: /gemini[\s._-]*2\.5[\s._-]*pro/i, inRate: 1.25, cacheRate: 0.125, outRate: 10.00 },
+  { re: /gemini[\s._-]*2\.[05][\s._-]*flash/i, inRate: 0.30, cacheRate: 0.03, outRate: 2.50 },
+  { re: /claude[\s._-]*opus[\s._-]*4/i, inRate: 15.00, cacheRate: 1.50, outRate: 75.00 },
+  { re: /claude[\s._-]*opus/i, inRate: 4.00, cacheRate: 0.20, outRate: 20.00 },
+  { re: /claude[\s._-]*sonnet[\s._-]*4/i, inRate: 3.00, cacheRate: 0.30, outRate: 15.00 },
+  { re: /claude[\s._-]*sonnet/i, inRate: 2.00, cacheRate: 0.10, outRate: 10.00 },
+  { re: /claude[\s._-]*haiku/i, inRate: 0.80, cacheRate: 0.08, outRate: 4.00 },
+  { re: /gpt[\s._-]*5|\bo[34](?:\b|[\s._-])/i, inRate: 2.00, cacheRate: 0.20, outRate: 10.00 },
+  { re: /gemini.*flash/i, inRate: 0.75, cacheRate: 0.075, outRate: 3.75 },
+  { re: /gemini.*pro/i, inRate: 1.25, cacheRate: 0.125, outRate: 10.00 },
+];
+
+function lookupModelPricing(modelName) {
+  const s = String(modelName || '').trim();
+  if (!s) return null;
+  for (const r of API_PRICING_RULES) {
+    if (r.re.test(s)) return r;
+  }
+  return null;
+}
+
+function estimateModelCostUsd(modelName, totalInput, cacheRead, outputTokens) {
+  const rate = lookupModelPricing(modelName);
+  if (!rate) return 0;
+  const totIn = toSafeInt(totalInput);
+  const cRead = Math.min(totIn, toSafeInt(cacheRead));
+  const uncachedIn = Math.max(0, totIn - cRead);
+  const out = toSafeInt(outputTokens);
+  const usd = (uncachedIn * rate.inRate + cRead * rate.cacheRate + out * rate.outRate) / 1_000_000;
+  return Number.isFinite(usd) && usd > 0 ? usd : 0;
+}
+
 module.exports = {
   toSafeInt,
   parseDurationSec,
@@ -452,4 +518,6 @@ module.exports = {
   parseQuotaSnapshot,
   normalizeGeneratorEntry,
   computeSessionMetrics,
+  lookupModelPricing,
+  estimateModelCostUsd,
 };
