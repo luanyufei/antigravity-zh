@@ -27,6 +27,19 @@
     '[data-testid="conversation-row-title"]',
     '[contenteditable="true"]',
     '[role="textbox"]',
+    '#ag-context-meter',
+    '#ag-context-meter-radial-host',
+    '#ag-context-meter-modal-host',
+    '.ag-cm-host-settings-page',
+    '.ag-cm-settings-workspace',
+    '.ag-cm-turn-footer',
+    '.ag-cm-autoswitch-toast',
+    '[data-ag-radial-top-layer]',
+    '[data-ag-modal-top-layer]',
+    '#agy-settings-host',
+    '#agy-telemetry-bar-host',
+    '.agy-turn-footer',
+    '[data-agy-telemetry-ignore]',
   ].join(',');
 
   const TRANSLATABLE_ATTRS = ['placeholder', 'title', 'aria-label'];
@@ -450,15 +463,20 @@
   }
 
   function updateWidgetUI() {
-    if (!pillEl || !btnZh || !btnEn) return;
-    hostEl.style.display = state.showFloatingToggle === false ? 'none' : 'block';
-    const isZh = state.locale === 'zh-CN';
-    btnZh.classList.toggle('active', isZh);
-    btnEn.classList.toggle('active', !isZh);
-    pillEl.classList.toggle('dark', detectDarkTheme());
-    pillEl.title = isZh
-      ? '实时切换界面语言 (⌘⌥L) · 拖动可移动位置 · 双击复位'
-      : 'Switch UI Language Instantly (⌘⌥L) · Drag to move · Double-click to reset';
+    // Legacy bottom-right [中 | EN] pill has been replaced by the unified settings button.
+    // Broadcast state changes so the unified settings UI stays in sync with ⌘⌥L & macOS menu bar.
+    try {
+      const legacy = document.getElementById('agy-i18n-host');
+      if (legacy) legacy.remove();
+    } catch (_e) {}
+    try {
+      window.dispatchEvent(new CustomEvent('agy-i18n:state', {
+        detail: {
+          locale: state.locale,
+          showFloatingToggle: state.showFloatingToggle !== false,
+        },
+      }));
+    } catch (_e) {}
   }
 
   function requestLocaleChange(nextLocale) {
@@ -476,181 +494,7 @@
   }
 
   function mountFloatingWidget() {
-    if (hostEl || !document.documentElement) return;
-    if (window.self !== window.top) return; // Never duplicate floating pill inside subframes/iframes
-    hostEl = document.createElement('div');
-    hostEl.id = 'agy-i18n-host';
-    hostEl.setAttribute('data-agy-i18n-ignore', '1');
-    hostEl.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483640;pointer-events:auto;user-select:none;';
-
-    // Restore saved drag coordinates
-    try {
-      const saved = JSON.parse(localStorage.getItem('agy-i18n-pill-pos') || 'null');
-      if (saved && typeof saved.right === 'number' && typeof saved.bottom === 'number') {
-        const maxR = Math.max(20, window.innerWidth - 96);
-        const maxB = Math.max(20, window.innerHeight - 40);
-        hostEl.style.right = `${Math.min(Math.max(8, saved.right), maxR)}px`;
-        hostEl.style.bottom = `${Math.min(Math.max(8, saved.bottom), maxB)}px`;
-      }
-    } catch (_e) {}
-
-    shadowRoot = hostEl.attachShadow({ mode: 'open' });
-    const style = document.createElement('style');
-    style.textContent = `
-      .pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        padding: 3px;
-        border-radius: 999px;
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
-        font-size: 11px;
-        font-weight: 600;
-        line-height: 1;
-        background: rgba(255, 255, 255, 0.82);
-        color: #3f3f46;
-        border: 1px solid rgba(0, 0, 0, 0.12);
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.10);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        cursor: grab;
-        opacity: 0.72;
-        transition: opacity 0.18s ease, box-shadow 0.18s ease, transform 0.15s ease;
-      }
-      .pill:hover {
-        opacity: 1;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
-      }
-      .pill.dragging {
-        cursor: grabbing;
-        opacity: 1;
-      }
-      .pill.dark {
-        background: rgba(28, 28, 32, 0.82);
-        color: #a1a1aa;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.36);
-      }
-      button {
-        appearance: none;
-        border: none;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        padding: 4px 7px;
-        border-radius: 999px;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
-      }
-      button:hover {
-        background: rgba(128, 128, 128, 0.16);
-      }
-      button.active {
-        background: #18181b;
-        color: #ffffff;
-      }
-      .pill.dark button.active {
-        background: #f4f4f5;
-        color: #18181b;
-      }
-    `;
-
-    pillEl = document.createElement('div');
-    pillEl.className = 'pill';
-
-    btnZh = document.createElement('button');
-    btnZh.type = 'button';
-    btnZh.textContent = '中';
-
-    btnEn = document.createElement('button');
-    btnEn.type = 'button';
-    btnEn.textContent = 'EN';
-
-    pillEl.appendChild(btnZh);
-    pillEl.appendChild(btnEn);
-    shadowRoot.appendChild(style);
-    shadowRoot.appendChild(pillEl);
-    document.documentElement.appendChild(hostEl);
-
-    // Drag support without stealing click events from buttons
-    let dragging = false;
-    let moved = false;
-    let capturedPointerId = null;
-    let startX = 0, startY = 0, startRight = 14, startBottom = 14;
-
-    pillEl.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      moved = false;
-      capturedPointerId = null;
-      startX = e.clientX;
-      startY = e.clientY;
-      startRight = parseFloat(hostEl.style.right) || 14;
-      startBottom = parseFloat(hostEl.style.bottom) || 14;
-    });
-
-    pillEl.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (!moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
-        moved = true;
-        pillEl.classList.add('dragging');
-        try {
-          pillEl.setPointerCapture(e.pointerId);
-          capturedPointerId = e.pointerId;
-        } catch (_err) {}
-      }
-      if (moved) {
-        const nextR = Math.min(Math.max(8, startRight - dx), window.innerWidth - 88);
-        const nextB = Math.min(Math.max(8, startBottom - dy), window.innerHeight - 36);
-        hostEl.style.right = `${nextR}px`;
-        hostEl.style.bottom = `${nextB}px`;
-      }
-    });
-
-    pillEl.addEventListener('pointerup', () => {
-      if (!dragging) return;
-      dragging = false;
-      pillEl.classList.remove('dragging');
-      if (capturedPointerId !== null) {
-        try { pillEl.releasePointerCapture(capturedPointerId); } catch (_err) {}
-        capturedPointerId = null;
-      }
-      if (moved) {
-        try {
-          localStorage.setItem('agy-i18n-pill-pos', JSON.stringify({
-            right: parseFloat(hostEl.style.right) || 14,
-            bottom: parseFloat(hostEl.style.bottom) || 14,
-          }));
-        } catch (_err) {}
-        setTimeout(() => { moved = false; }, 50);
-      }
-    });
-
-    pillEl.addEventListener('dblclick', () => {
-      hostEl.style.right = '14px';
-      hostEl.style.bottom = '14px';
-      try { localStorage.removeItem('agy-i18n-pill-pos'); } catch (_err) {}
-    });
-
-    btnZh.addEventListener('click', (e) => {
-      if (moved) { e.preventDefault(); return; }
-      e.stopPropagation();
-      requestLocaleChange('zh-CN');
-    });
-    btnEn.addEventListener('click', (e) => {
-      if (moved) { e.preventDefault(); return; }
-      e.stopPropagation();
-      requestLocaleChange('en');
-    });
-
-    // Keep theme in sync when user toggles Dark/Light mode
-    const themeObs = new MutationObserver(() => updateWidgetUI());
-    themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
-    if (window.matchMedia) {
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => updateWidgetUI());
-    }
+    // Replaced by unified floating settings icon in telemetry/settings overlay.
     updateWidgetUI();
   }
 

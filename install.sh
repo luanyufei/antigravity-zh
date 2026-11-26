@@ -37,7 +37,7 @@ for app in "${FOUND_APPS[@]}"; do
   echo "  - $app"
 done
 
-mkdir -p "$TARGET_DIR/dict" "$TARGET_DIR/local-plugins/vibrancy-assets" "$BIN_DIR"
+mkdir -p "$TARGET_DIR/dict" "$TARGET_DIR/local-plugins/vibrancy-assets" "$TARGET_DIR/local-plugins/telemetry-assets" "$BIN_DIR"
 
 cp "$REPO_DIR/src/patcher.py" "$TARGET_DIR/patcher.py"
 cp "$REPO_DIR/src/main-hook.js" "$TARGET_DIR/main-hook.js"
@@ -45,6 +45,10 @@ cp "$REPO_DIR/src/renderer-i18n.js" "$TARGET_DIR/renderer-i18n.js"
 cp "$REPO_DIR/dict/zh-CN.json" "$TARGET_DIR/dict/zh-CN.json"
 cp "$REPO_DIR/src/local-plugins/vibrancy.js" "$TARGET_DIR/local-plugins/vibrancy.js"
 cp "$REPO_DIR/src/local-plugins/vibrancy-assets/style.js" "$TARGET_DIR/local-plugins/vibrancy-assets/style.js"
+cp "$REPO_DIR/src/local-plugins/telemetry.js" "$TARGET_DIR/local-plugins/telemetry.js"
+cp "$REPO_DIR/src/local-plugins/telemetry-assets/preload.js" "$TARGET_DIR/local-plugins/telemetry-assets/preload.js"
+cp "$REPO_DIR/src/local-plugins/telemetry-assets/metrics.js" "$TARGET_DIR/local-plugins/telemetry-assets/metrics.js"
+cp "$REPO_DIR/src/local-plugins/telemetry-assets/overlay.js" "$TARGET_DIR/local-plugins/telemetry-assets/overlay.js"
 chmod +x "$TARGET_DIR/patcher.py"
 
 for variant in insiders stable; do
@@ -54,6 +58,14 @@ for variant in insiders stable; do
   "enabled": true,
   "material": "fullscreen-ui",
   "opacity": 0.55
+}
+EOF
+  fi
+  if [ ! -f "$TARGET_DIR/local-plugins/telemetry-${variant}.json" ]; then
+    cat > "$TARGET_DIR/local-plugins/telemetry-${variant}.json" <<'EOF'
+{
+  "showComposerBar": true,
+  "showTurnFooter": true
 }
 EOF
   fi

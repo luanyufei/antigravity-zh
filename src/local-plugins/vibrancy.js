@@ -259,10 +259,19 @@ module.exports = function initVibrancyPlugin(api) {
     api.syncAllNativeMenus();
   }
 
+  const changeListeners = new Set();
+  function notifyChange() {
+    const snap = { ...cfg };
+    for (const fn of changeListeners) {
+      try { fn(snap); } catch (_e) {}
+    }
+  }
+
   function updateCfg(patch) {
     cfg = { ...cfg, ...patch };
     saveCfg(cfg);
     applyAll();
+    notifyChange();
     api.log(`[vibrancy] Updated: enabled=${cfg.enabled}, material=${cfg.material}, opacity=${cfg.opacity}`);
   }
 
@@ -379,6 +388,7 @@ module.exports = function initVibrancyPlugin(api) {
     reloadTimer = setTimeout(() => {
       cfg = loadCfg();
       applyAll();
+      notifyChange();
       api.log(`[vibrancy] Hot-reloaded ${label} (enabled=${cfg.enabled}, material=${cfg.material}, opacity=${cfg.opacity})`);
     }, 100);
   }
@@ -394,6 +404,30 @@ module.exports = function initVibrancyPlugin(api) {
       });
     }
   } catch (_e) {}
+
+  api.vibrancy = {
+    getConfig: () => ({ ...cfg }),
+    updateConfig: (patch) => {
+      if (!patch || typeof patch !== 'object') return { ...cfg };
+      const next = {};
+      if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled;
+      if (typeof patch.material === 'string' && MATERIALS.some((m) => m.id === patch.material)) {
+        next.material = patch.material;
+      }
+      if (typeof patch.opacity === 'number' && Number.isFinite(patch.opacity)) {
+        next.opacity = Math.min(0.95, Math.max(0.15, Math.round(patch.opacity * 100) / 100));
+      }
+      updateCfg(next);
+      return { ...cfg };
+    },
+    onChange: (fn) => {
+      if (typeof fn !== 'function') return () => {};
+      changeListeners.add(fn);
+      return () => changeListeners.delete(fn);
+    },
+    materials: MATERIALS,
+    opacities: OPACITIES,
+  };
 
   api.log(`[vibrancy] Plugin initialized (enabled=${cfg.enabled}, material=${cfg.material}, opacity=${cfg.opacity})`);
 };

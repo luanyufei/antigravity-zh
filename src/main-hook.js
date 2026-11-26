@@ -210,7 +210,7 @@ function buildLanguageSubmenu() {
       },
       {
         id: 'agy-i18n-pill-toggle',
-        label: isZh ? '显示悬浮语言切换按钮' : 'Show Floating Language Pill',
+        label: isZh ? '显示右下角浮动设置图标' : 'Show Floating Settings Button',
         type: 'checkbox',
         checked: config.showFloatingToggle !== false,
         click: (mi) => setShowFloatingToggle(Boolean(mi.checked)),
@@ -241,7 +241,7 @@ function ensureAppMenuLanguageItem(menu) {
       if (enItem) enItem.checked = !isZh;
       if (togItem) togItem.label = isZh ? '快速切换中英文' : 'Toggle Chinese / English';
       if (pillItem) {
-        pillItem.label = isZh ? '显示悬浮语言切换按钮' : 'Show Floating Language Pill';
+        pillItem.label = isZh ? '显示右下角浮动设置图标' : 'Show Floating Settings Button';
         pillItem.checked = config.showFloatingToggle !== false;
       }
     }
@@ -692,6 +692,7 @@ const api = {
   getConfig: () => ({ ...config }),
   setLocale,
   toggleLocale,
+  setShowFloatingToggle,
   syncAllNativeMenus,
   registerMenuEnhancer: (fn) => {
     if (typeof fn === 'function') menuEnhancers.push(fn);

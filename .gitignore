@@ -6,3 +6,4 @@ __pycache__/
 backups/
 config.json
 Agents.md
+other/
