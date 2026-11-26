@@ -43,34 +43,35 @@ module.exports = function buildRendererApplyCode(state) {
     }
 
     function renderCss() {
+      const cur = window.__AGY_VIBRANCY_CFG__ || cfg;
       let el = document.getElementById(STYLE_ID);
-      if (!cfg.enabled) {
+      if (!cur.enabled) {
         if (el) el.remove();
         return;
       }
 
       const dark = detectDark();
-      const op = cfg.opacity; // 0.35 (Airy), 0.55 (Balanced), 0.75 (Subtle)
+      const op = cur.opacity; // continuous 0.20..0.85
 
       // Cohesive single-layer glass hierarchy (no double-stacked opaque-ish slabs):
       // - Outer shell & sidebar share one airy base tint
       // - Main content inset card has a gentle, unified glass tint + 1px specular hairline
       // - Sidebar rows & sticky headers stay transparent (no dark zebra stripes!)
       const shellOp = dark
-        ? Math.min(0.62, Math.max(0.18, +(op * 0.62).toFixed(2)))
-        : Math.min(0.55, Math.max(0.14, +(op * 0.52).toFixed(2)));
+        ? Math.min(0.62, Math.max(0.18, +(op * 0.62).toFixed(3)))
+        : Math.min(0.55, Math.max(0.14, +(op * 0.52).toFixed(3)));
       const contentOp = dark
-        ? Math.min(0.52, Math.max(0.14, +(op * 0.42).toFixed(2)))
-        : Math.min(0.62, Math.max(0.18, +(op * 0.55).toFixed(2)));
+        ? Math.min(0.52, Math.max(0.14, +(op * 0.42).toFixed(3)))
+        : Math.min(0.62, Math.max(0.18, +(op * 0.55).toFixed(3)));
       const cardOp = dark
-        ? Math.min(0.68, Math.max(0.28, +(op * 0.68).toFixed(2)))
-        : Math.min(0.76, Math.max(0.42, +(op * 0.80).toFixed(2)));
+        ? Math.min(0.68, Math.max(0.28, +(op * 0.68).toFixed(3)))
+        : Math.min(0.76, Math.max(0.42, +(op * 0.80).toFixed(3)));
       const composerOp = dark
-        ? Math.min(0.72, Math.max(0.38, +(op * 0.78).toFixed(2)))
-        : Math.min(0.82, Math.max(0.50, +(op * 0.88).toFixed(2)));
+        ? Math.min(0.72, Math.max(0.38, +(op * 0.78).toFixed(3)))
+        : Math.min(0.82, Math.max(0.50, +(op * 0.88).toFixed(3)));
       const popOp = dark
-        ? Math.min(0.86, +(op + 0.28).toFixed(2))
-        : Math.min(0.90, +(op + 0.28).toFixed(2));
+        ? Math.min(0.86, +(op + 0.28).toFixed(3))
+        : Math.min(0.90, +(op + 0.28).toFixed(3));
 
       const shellRgb = dark ? '16, 17, 22' : '242, 244, 249';
       const contentRgb = dark ? '20, 21, 28' : '255, 255, 255';
@@ -312,6 +313,16 @@ module.exports = function buildRendererApplyCode(state) {
     }
 
     window.__AGY_VIBRANCY_CFG__ = cfg;
+    window.__AGY_VIBRANCY_PREVIEW__ = (nextOpacity) => {
+      if (typeof nextOpacity !== 'number' || !Number.isFinite(nextOpacity)) return;
+      const base = window.__AGY_VIBRANCY_CFG__ || cfg || { enabled: true, material: 'fullscreen-ui', opacity: 0.55 };
+      window.__AGY_VIBRANCY_CFG__ = {
+        ...base,
+        enabled: true,
+        opacity: Math.min(0.95, Math.max(0.15, nextOpacity)),
+      };
+      renderCss();
+    };
     renderCss();
     if (!window.__AGY_VIBRANCY_OBS__) {
       const obs = new MutationObserver(() => {

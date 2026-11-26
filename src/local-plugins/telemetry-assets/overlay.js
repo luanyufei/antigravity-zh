@@ -118,13 +118,13 @@
     const panelRgb = dark ? '24, 26, 35' : '252, 253, 255';
     const panelAlpha = vibOn
       ? (dark
-        ? Math.min(0.86, Math.max(0.60, +(op + 0.28).toFixed(2)))
-        : Math.min(0.90, Math.max(0.70, +(op + 0.30).toFixed(2))))
+        ? Math.min(0.86, Math.max(0.60, +(op + 0.28).toFixed(3)))
+        : Math.min(0.90, Math.max(0.70, +(op + 0.30).toFixed(3))))
       : (dark ? 0.86 : 0.90);
     const fabAlpha = vibOn
       ? (dark
-        ? Math.min(0.76, Math.max(0.48, +(op + 0.16).toFixed(2)))
-        : Math.min(0.84, Math.max(0.62, +(op + 0.24).toFixed(2))))
+        ? Math.min(0.76, Math.max(0.48, +(op + 0.16).toFixed(3)))
+        : Math.min(0.84, Math.max(0.62, +(op + 0.24).toFixed(3))))
       : (dark ? 0.80 : 0.86);
 
     const blur = vibOn ? 'blur(26px) saturate(160%)' : 'blur(22px) saturate(145%)';
@@ -681,7 +681,7 @@
     popoverCardEl.innerHTML = `
         <div class="head">
           <div class="title">
-            <span>${zh ? '实时遥测' : 'Live Telemetry'}</span>
+            <span>${zh ? '状态监控' : 'Status Monitor'}</span>
             ${quota?.planName ? `<span class="badge">${quota.planName}</span>` : ''}
           </div>
           <button type="button" class="icon-btn" id="btn-refresh">${zh ? '刷新' : 'Refresh'}</button>
@@ -856,8 +856,9 @@
           display: inline-flex;
           align-items: center;
           gap: 9px;
-          padding: 5px 8px;
-          border-radius: 7px;
+          height: 28px;
+          padding: 0 11px;
+          border-radius: 9999px;
           font-family: ${hostFont};
           font-size: 12.5px;
           font-weight: 400;
@@ -913,7 +914,7 @@
           stroke: ${dark ? 'rgba(255, 255, 255, 0.25)' : 'rgba(0, 0, 0, 0.22)'};
         }
       </style>
-      <button type="button" class="bar ${popoverOpen ? 'active' : ''}" data-act="toggle" aria-label="${zh ? '实时遥测状态条' : 'Live Telemetry Bar'}">
+      <button type="button" class="bar ${popoverOpen ? 'active' : ''}" data-act="toggle" aria-label="${zh ? '状态监控栏' : 'Status Monitor Bar'}">
         ${showContext ? `
           <span class="item tone-${ctxTone}" title="${ctxTitle}">
             <svg class="ring" viewBox="0 0 18 18" aria-hidden="true">
@@ -1745,7 +1746,7 @@
             <span>${zh ? '不透明度' : 'Opacity'}</span>
             <span class="mono" id="lbl-vib-op">${opacityPct}%</span>
           </div>
-          <input type="range" id="rng-vib-op" min="20" max="85" step="5" value="${opacityPct}" />
+          <input type="range" id="rng-vib-op" min="20" max="85" step="1" value="${opacityPct}" />
         </div>
       </div>
     ` : '';
@@ -1901,11 +1902,48 @@
     const rngOp = settingsPanelEl.querySelector('#rng-vib-op');
     const lblOp = settingsPanelEl.querySelector('#lbl-vib-op');
     if (rngOp) {
+      let opPreviewRaf = null;
+      let pendingOpVal = null;
+      const applyLiveOpacityPreview = (opVal) => {
+        if (settings?.vibrancy) {
+          settings.vibrancy = { ...settings.vibrancy, enabled: true, opacity: opVal };
+        }
+        if (typeof window.__AGY_VIBRANCY_PREVIEW__ === 'function') {
+          window.__AGY_VIBRANCY_PREVIEW__(opVal);
+        }
+        syncSettingsSurfaceVars();
+        if (homeHost && homeHost.isConnected) renderHomeDashboard();
+        if (popoverOpen) renderTelemetryPopover(false);
+      };
+
       rngOp.addEventListener('input', () => {
+        const opVal = Math.round(Number(rngOp.value)) / 100;
         if (lblOp) lblOp.textContent = `${rngOp.value}%`;
+        // If vibrancy was currently turned off, enable native NSVisualEffectView immediately
+        if (settings?.vibrancy && !settings.vibrancy.enabled && api?.setVibrancy) {
+          settings.vibrancy.enabled = true;
+          const chkVib = settingsPanelEl.querySelector('#chk-vib-enabled');
+          if (chkVib) chkVib.checked = true;
+          const subBlock = rngOp.closest('.sub-block');
+          if (subBlock) subBlock.classList.remove('dim');
+          api.setVibrancy({ enabled: true, opacity: opVal }).catch(() => {});
+        }
+        pendingOpVal = opVal;
+        if (!opPreviewRaf) {
+          opPreviewRaf = requestAnimationFrame(() => {
+            opPreviewRaf = null;
+            if (pendingOpVal !== null) {
+              const v = pendingOpVal;
+              pendingOpVal = null;
+              applyLiveOpacityPreview(v);
+            }
+          });
+        }
       });
+
       rngOp.addEventListener('change', () => {
-        const opVal = Number(rngOp.value) / 100;
+        const opVal = Math.round(Number(rngOp.value)) / 100;
+        applyLiveOpacityPreview(opVal);
         if (api?.setVibrancy) {
           api.setVibrancy({ enabled: true, opacity: opVal }).then((s) => { if (s) applySettings(s); }).catch(() => {});
         }
